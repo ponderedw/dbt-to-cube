@@ -1,0 +1,2 @@
+dbt-postgres==1.7.4
+faker==20.1.0

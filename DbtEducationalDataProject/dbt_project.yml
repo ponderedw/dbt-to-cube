@@ -1,0 +1,33 @@
+name: 'DbtEducationalDataProject'
+version: '1.0.0'
+profile: 'DbtEducationalDataProject'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+
+models:
+  DbtEducationalDataProject:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      core:
+        +materialized: table
+      finance:
+        +materialized: table
+      academic:
+        +materialized: table
+
+vars:
+  current_semester: "'Fall 2024'"
+  academic_year: "'2024-2025'"

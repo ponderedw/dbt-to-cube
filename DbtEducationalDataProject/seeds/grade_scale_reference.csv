@@ -1,0 +1,18 @@
+grade_letter,grade_points,min_percentage,max_percentage,description
+A+,4.0,97,100,Exceptional
+A,4.0,93,96,Excellent
+A-,3.7,90,92,Very Good
+B+,3.3,87,89,Good Plus
+B,3.0,83,86,Good
+B-,2.7,80,82,Good Minus
+C+,2.3,77,79,Satisfactory Plus
+C,2.0,73,76,Satisfactory
+C-,1.7,70,72,Satisfactory Minus
+D+,1.3,67,69,Poor Plus
+D,1.0,63,66,Poor
+D-,0.7,60,62,Poor Minus
+F,0.0,0,59,Failing
+W,null,null,null,Withdrawn
+I,null,null,null,Incomplete
+P,null,null,null,Pass
+NP,null,null,null,No Pass

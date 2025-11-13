@@ -1,0 +1,21 @@
+DbtEducationalDataProject:
+  outputs:
+    dev:
+      dbname: education_dw
+      host: localhost
+      pass: dbt_password
+      port: 5432
+      schema: public
+      threads: 8
+      type: postgres
+      user: dbt_user
+    container:
+      dbname: education_dw
+      host: postgres
+      pass: dbt_password
+      port: 5432
+      schema: public
+      threads: 8
+      type: postgres
+      user: dbt_user
+  target: container

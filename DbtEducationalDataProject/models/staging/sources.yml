@@ -1,0 +1,94 @@
+version: 2
+
+sources:
+  - name: raw_edu
+    description: Raw educational data from various systems
+    tables:
+      - name: students
+        description: Student master data
+        columns:
+          - name: student_id
+            description: Unique student identifier
+            tests:
+              - unique
+              - not_null
+          - name: email
+            description: Student email address
+            tests:
+              - unique
+
+      - name: courses
+        description: Course catalog
+        columns:
+          - name: course_id
+            description: Unique course identifier
+            tests:
+              - unique
+              - not_null
+          - name: course_code
+            description: Course code
+            tests:
+              - unique
+
+      - name: departments
+        description: Academic departments
+        columns:
+          - name: department_id
+            description: Unique department identifier
+            tests:
+              - unique
+              - not_null
+
+      - name: faculty
+        description: Faculty and staff information
+        columns:
+          - name: faculty_id
+            description: Unique faculty identifier
+            tests:
+              - unique
+              - not_null
+
+      - name: enrollments
+        description: Student course enrollments
+        columns:
+          - name: enrollment_id
+            description: Unique enrollment identifier
+            tests:
+              - unique
+              - not_null
+
+      - name: semesters
+        description: Academic semester information
+        columns:
+          - name: semester_id
+            description: Unique semester identifier
+            tests:
+              - unique
+              - not_null
+
+      - name: class_sessions
+        description: Individual class session records
+
+      - name: assignments
+        description: Course assignments
+
+      - name: assignment_submissions
+        description: Student assignment submissions
+
+      - name: financial_aid
+        description: Student financial aid records
+
+      - name: tuition_payments
+        description: Student tuition payment records
+
+      - name: student_persistence
+        description: Student persistence and attrition tracking data
+        columns:
+          - name: student_dcid
+            description: Student unique identifier (DCID)
+          - name: student_number
+            description: Student number
+          - name: in_school_year_attrition_flag
+            description: Flag indicating if student left during school year
+            tests:
+              - not_null

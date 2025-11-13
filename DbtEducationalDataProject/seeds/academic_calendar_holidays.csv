@@ -1,0 +1,10 @@
+holiday_name,holiday_date,holiday_type,affects_classes
+New Years Day,2024-01-01,Federal Holiday,Yes
+Martin Luther King Jr Day,2024-01-15,Federal Holiday,Yes
+Presidents Day,2024-02-19,Federal Holiday,No
+Spring Break Week,2024-03-11,Academic Break,Yes
+Memorial Day,2024-05-27,Federal Holiday,No
+Independence Day,2024-07-04,Federal Holiday,Yes
+Labor Day,2024-09-02,Federal Holiday,No
+Thanksgiving Break,2024-11-28,Academic Break,Yes
+Winter Break Start,2024-12-16,Academic Break,Yes

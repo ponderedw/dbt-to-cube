@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: education_dw
+      POSTGRES_USER: dbt_user
+      POSTGRES_PASSWORD: dbt_password
+    ports:
+      - "5432:5432"
+    volumes:
+      # - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbt_user -d education_dw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dbt:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/dbt
+    working_dir: /dbt/DbtEducationalDataProject
+    environment:
+      DBT_PROFILES_DIR: /dbt/DbtEducationalDataProject
+    command: >
+      sh -c "
+        dbt deps &&
+        dbt seed &&
+        dbt run &&
+        dbt docs generate
+      "
+
+  cube_api:
+    restart: always
+    image: cubejs/cube:latest
+    ports:
+      - 4000:4000
+      - 15432:15432
+    env_file: .env
+    volumes:
+      - .:/cube/conf
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dbt:
+        condition: service_completed_successfully
+
+  superset:
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    ports:
+      - 8088:8088
+    environment:
+      - SUPERSET_SECRET_KEY=your_secret_key_change_this_in_production
+      - SUPERSET_CONFIG_PATH=/app/superset_config.py
+    volumes:
+      - superset_data:/app/superset_home
+      - ./superset_config.py:/app/superset_config.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dbt:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  superset_data:
