@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS raw_edu.enrollments (
     grade TEXT,
     grade_points DECIMAL(3,2),
     attendance_percentage DECIMAL(5,2),
+    enrollment_status TEXT DEFAULT 'Completed',
     created_at TIMESTAMP DEFAULT now()
 );
 
@@ -161,6 +162,16 @@ CREATE TABLE IF NOT EXISTS raw_edu.tuition_payments (
     payment_date DATE,
     payment_method TEXT,
     late_fee DECIMAL(8,2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS raw_edu.student_persistence (
+    persistence_id SERIAL PRIMARY KEY,
+    student_dcid INT,
+    student_number VARCHAR(20),
+    in_school_year_attrition_flag BOOLEAN NOT NULL DEFAULT FALSE,
+    academic_year VARCHAR(10),
+    semester_id INT,
     created_at TIMESTAMP DEFAULT now()
 );
 
@@ -312,8 +323,19 @@ INSERT INTO raw_edu.enrollments (student_id, course_id, semester_id, enrollment_
     (3, 9, 3, '2024-08-26', 'A', 4.0, 97.0, 'Completed', '2024-12-13')
 ON CONFLICT DO NOTHING;
 
--- Add enrollment_status column and update completion dates for existing enrollments
-ALTER TABLE raw_edu.enrollments ADD COLUMN IF NOT EXISTS enrollment_status TEXT DEFAULT 'Completed';
+-- enrollment_status column is now part of the original table creation
+
+-- Insert sample student persistence data
+INSERT INTO raw_edu.student_persistence (student_dcid, student_number, in_school_year_attrition_flag, academic_year, semester_id) VALUES
+    (1, 'STU001', FALSE, '2023-2024', 1),
+    (2, 'STU002', FALSE, '2023-2024', 1),
+    (3, 'STU003', TRUE, '2023-2024', 2),    -- This student dropped mid-year
+    (4, 'STU004', FALSE, '2024-2025', 3),
+    (5, 'STU005', FALSE, '2024-2025', 3),
+    (6, 'STU006', FALSE, '2024-2025', 3),
+    (7, 'STU007', FALSE, '2024-2025', 3),
+    (8, 'STU008', TRUE, '2024-2025', 3)     -- This student dropped mid-year
+ON CONFLICT DO NOTHING;
 
 -- Update completion dates for existing enrollments
 UPDATE raw_edu.enrollments 

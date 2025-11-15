@@ -36,6 +36,19 @@ services:
         dbt docs generate
       "
 
+  dbt-docs:
+    build:
+      context: ./DbtEducationalDataProject
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      dbt:
+        condition: service_completed_successfully
+    volumes:
+      - .:/dbt
+    working_dir: /usr/app/dbt
+
   cube_api:
     restart: always
     image: cubejs/cube:latest
@@ -51,6 +64,47 @@ services:
       dbt:
         condition: service_completed_successfully
 
+  dbt-cube-sync:
+    build:
+      context: ./dbt-cube-sync
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    depends_on:
+      dbt:
+        condition: service_completed_successfully
+      cube_api:
+        condition: service_started
+      superset:
+        condition: service_started
+    entrypoint: []
+    command: 
+      - "/bin/sh"
+      - "-c"
+      - |
+        echo 'Waiting for services to be ready...'
+        sleep 30
+        echo 'Starting automated data pipeline...'
+        
+        echo '🚀 Step 1: Converting dbt models to Cube.js schemas...'
+        dbt-cube-sync dbt-to-cube \
+          --manifest /workspace/DbtEducationalDataProject/target/manifest.json \
+          --catalog /workspace/DbtEducationalDataProject/target/catalog.json \
+          --output /workspace/cube_output
+        
+        echo '🚀 Step 2: Syncing Cube.js schemas to Superset...'
+        dbt-cube-sync cube-to-bi superset \
+          --cube-files /workspace/cube_output \
+          --url http://superset:8088 \
+          --username admin \
+          --password admin \
+          --cube-connection-name Cube
+          
+        echo '🎉 Full pipeline completed successfully!'
+        echo 'Keeping container alive for monitoring...'
+        tail -f /dev/null
+
   superset:
     restart: always
     build:
@@ -62,13 +116,26 @@ services:
       - SUPERSET_SECRET_KEY=your_secret_key_change_this_in_production
       - SUPERSET_CONFIG_PATH=/app/superset_config.py
     volumes:
-      - superset_data:/app/superset_home
+      # - superset_data:/app/superset_home
       - ./superset_config.py:/app/superset_config.py
     depends_on:
       postgres:
         condition: service_healthy
       dbt:
         condition: service_completed_successfully
+
+  superset-setup:
+    build:
+      context: ./superset-setup
+      dockerfile: Dockerfile
+    depends_on:
+      superset:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - default
 
 volumes:
   postgres_data:

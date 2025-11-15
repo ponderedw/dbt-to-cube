@@ -1,4 +1,4 @@
 module.exports = {
-  schemaPath: "cubes_correct",
+  schemaPath: "cube_output",
   pgSqlPort: 15432
 };

@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "dbt-cube-sync"
+version = "0.1.0a1"
+description = "Synchronization tool for dbt models to Cube.js schemas and BI tools"
+authors = ["Ponder"]
+readme = "README.md"
+packages = [{include = "dbt_cube_sync"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+requests = "^2.31.0"
+pyyaml = "^6.0"
+click = "^8.1.7"
+pydantic = "^2.5.0"
+jinja2 = "^3.1.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+black = "^23.9.1"
+flake8 = "^6.1.0"
+mypy = "^1.6.0"
+
+[tool.poetry.scripts]
+dbt-cube-sync = "dbt_cube_sync.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
