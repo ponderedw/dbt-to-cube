@@ -191,19 +191,7 @@ class SupersetConnector(BaseConnector):
         
         cube_name = cube_name_match.group(1)
         
-        # Use public schema and cube name for Superset dataset
-        schema_name = "public"
-        table_name = cube_name  # Use cube name (not database table name)
-        
-        # Extract actual database table for reference (but don't use it for dataset)
-        sql_match = re.search(r'sql:\s*[`"\']\s*SELECT\s+.*FROM\s+(\w+\.\w+)', content, re.IGNORECASE)
-        actual_db_table = None
-        if sql_match:
-            actual_db_table = sql_match.group(1)
-        
         print(f"  Cube: {cube_name}")
-        print(f"  Schema: {schema_name}")
-        print(f"  Table: {table_name}")
         
         # Parse dimensions
         dimensions = self._parse_dimensions(content)
@@ -213,9 +201,8 @@ class SupersetConnector(BaseConnector):
         
         return {
             'cube_name': cube_name,
-            'schema': schema_name,
-            'table_name': table_name,  # This is now the cube name for dataset creation
-            'actual_db_table': actual_db_table,  # This is the real DB table
+            'schema': 'public',             # Always use public schema for Cube.js
+            'table_name': cube_name,        # Use cube name as table name (e.g., CoursePerformanceSummary)
             'dimensions': dimensions,
             'measures': measures
         }
@@ -409,27 +396,14 @@ class SupersetConnector(BaseConnector):
         """Create a new dataset in Superset"""
         dataset_url = f"{self.base_url}/api/v1/dataset/"
         
-        # If we have actual DB table info, use custom SQL, otherwise use table reference
-        if schema_info.get('actual_db_table'):
-            # Create a custom SQL dataset that references the actual table but is named with cube name
-            sql_query = f"SELECT * FROM {schema_info['actual_db_table']}"
-            payload = {
-                "database": self.database_id,
-                "schema": schema_info['schema'],  # "public"
-                "table_name": schema_info['table_name'],  # cube name like "CoursePerformanceSummary" 
-                "sql": sql_query,
-                "normalize_columns": False,
-                "always_filter_main_dttm": False
-            }
-        else:
-            # Fallback to direct table reference
-            payload = {
-                "database": self.database_id,
-                "schema": schema_info['schema'],
-                "table_name": schema_info['table_name'],
-                "normalize_columns": False,
-                "always_filter_main_dttm": False
-            }
+        # Create a simple table dataset (Cube.js will handle the actual data source)
+        payload = {
+            "database": self.database_id,
+            "schema": schema_info['schema'],              # "public"
+            "table_name": schema_info['table_name'],      # cube name like "CoursePerformanceSummary"
+            "normalize_columns": False,
+            "always_filter_main_dttm": False
+        }
         
         print(f"\\n📊 Creating new dataset: {schema_info['table_name']}")
         response = self.session.post(dataset_url, json=payload)

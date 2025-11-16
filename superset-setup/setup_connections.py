@@ -99,20 +99,12 @@ def create_cube_database_connection(session, base_url):
     
     database_data = {
         "database_name": "Cube",
-        "sqlalchemy_uri": "postgresql://dbt_user:dbt_password@postgres:5432/education_dw",
+        "sqlalchemy_uri": "postgresql://username:password@cube_api:15432/test",
         "expose_in_sqllab": True,
         "allow_ctas": False,
         "allow_cvas": False,
         "allow_dml": True,
-        "allow_file_upload": False,
-        "extra": json.dumps({
-            "metadata_params": {},
-            "engine_params": {
-                "connect_args": {
-                    "options": "-c search_path=public"
-                }
-            }
-        })
+        "allow_file_upload": False
     }
     
     print("🔄 Creating Cube database connection...")
