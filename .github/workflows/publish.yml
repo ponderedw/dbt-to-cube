@@ -1,0 +1,56 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    outputs:
+      library: ${{ steps.filter.outputs.library == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Ensures that the full history is fetched
+
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            library:
+              - 'dbt-cube-sync/**/*'
+
+  publish_library:
+    runs-on: ubuntu-latest
+    needs: filter
+    if: needs.filter.outputs.library == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Install dependencies
+        working-directory: ./dbt-cube-sync
+        run: poetry install
+
+      - name: Build package
+        working-directory: ./dbt-cube-sync
+        run: poetry build
+
+      - name: Publish to PyPI
+        working-directory: ./dbt-cube-sync
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: poetry publish -u __token__ -p $PYPI_TOKEN
+
+
