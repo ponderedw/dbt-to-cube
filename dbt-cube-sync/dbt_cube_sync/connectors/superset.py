@@ -337,12 +337,26 @@ class SupersetConnector(BaseConnector):
             'count_distinct': 'COUNT(DISTINCT'
         }
         
+        # Remove Cube.js ${} syntax and convert to plain SQL column references
+        cleaned_expression = self._clean_cube_expression(sql_expression)
+        
         agg_func = agg_mapping.get(agg_type, 'SUM')
         
         if agg_type == 'count_distinct':
-            return f"{agg_func} {sql_expression})"
+            return f"{agg_func} {cleaned_expression})"
         else:
-            return f"{agg_func}({sql_expression})"
+            return f"{agg_func}({cleaned_expression})"
+    
+    def _clean_cube_expression(self, expression: str) -> str:
+        """Convert Cube.js expressions to SQL column references for Superset"""
+        import re
+        
+        # Remove ${} syntax - convert ${column_name} to column_name
+        cleaned = re.sub(r'\$\{([^}]+)\}', r'\1', expression)
+        
+        # Handle more complex expressions like arithmetic
+        # Keep parentheses and operators but clean column references
+        return cleaned
     
     def _create_or_update_dataset(self, schema_info: Dict[str, Any]) -> int:
         """Create a new dataset or update existing one"""
@@ -506,37 +520,41 @@ class SupersetConnector(BaseConnector):
     
     def _update_metrics(self, existing_metrics: List[dict], measures: List[dict]) -> List[dict]:
         """Update metrics with new measures"""
-        # Clean existing metrics
+        # Clean existing metrics and create a lookup by name
         updated_metrics = []
+        existing_metric_names = {}
+        
         for metric in existing_metrics:
             clean_metric = {k: v for k, v in metric.items() 
                           if k not in ['created_on', 'changed_on', 'uuid']}
+            existing_metric_names[metric.get('metric_name')] = len(updated_metrics)
             updated_metrics.append(clean_metric)
         
-        # Add new metrics
-        existing_metric_names = {m.get('metric_name') for m in existing_metrics}
-        added_count = 0
-        
+        # Add or update metrics
         for measure in measures:
             metric_name = measure['metric_name']
             
-            if metric_name not in existing_metric_names:
-                new_metric = {
-                    'metric_name': metric_name,
-                    'verbose_name': measure['verbose_name'],
-                    'expression': measure['expression'],
-                    'description': measure['description'],
-                    'metric_type': 'simple',
-                    'currency': None,
-                    'd3format': None,
-                    'extra': None,
-                    'warning_text': None
-                }
-                updated_metrics.append(new_metric)
-                print(f"  ✓ Prepared '{metric_name}': {measure['expression']}")
-                added_count += 1
+            new_metric = {
+                'metric_name': metric_name,
+                'verbose_name': measure['verbose_name'],
+                'expression': measure['expression'],
+                'description': measure['description'],
+                'metric_type': 'simple',
+                'currency': None,
+                'd3format': None,
+                'extra': None,
+                'warning_text': None
+            }
+            
+            if metric_name in existing_metric_names:
+                # Update existing metric
+                index = existing_metric_names[metric_name]
+                updated_metrics[index].update(new_metric)
+                print(f"  ✓ Updated '{metric_name}': {measure['expression']}")
             else:
-                print(f"  ⊘ Skipping '{metric_name}' (already exists)")
+                # Add new metric
+                updated_metrics.append(new_metric)
+                print(f"  ✓ Added '{metric_name}': {measure['expression']}")
         
         return updated_metrics
 
