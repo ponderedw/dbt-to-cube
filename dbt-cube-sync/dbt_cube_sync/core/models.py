@@ -22,6 +22,25 @@ class DbtMetric(BaseModel):
     description: Optional[str] = None
 
 
+class DbtRefreshKey(BaseModel):
+    """Represents a refresh_key configuration for pre-aggregations"""
+    every: Optional[str] = None
+    sql: Optional[str] = None
+    incremental: Optional[bool] = None
+    update_window: Optional[str] = None
+
+
+class DbtPreAggregation(BaseModel):
+    """Represents a dbt pre-aggregation configuration"""
+    name: str
+    type: str = "rollup"
+    measures: Optional[List[str]] = None
+    dimensions: Optional[List[str]] = None
+    time_dimension: Optional[str] = None
+    granularity: Optional[str] = None
+    refresh_key: Optional[DbtRefreshKey] = None
+
+
 class DbtModel(BaseModel):
     """Represents a parsed dbt model"""
     name: str
@@ -30,6 +49,7 @@ class DbtModel(BaseModel):
     node_id: str
     columns: Dict[str, DbtColumn]
     metrics: Dict[str, DbtMetric]
+    pre_aggregations: Dict[str, DbtPreAggregation] = {}
 
 
 class CubeDimension(BaseModel):
@@ -50,12 +70,32 @@ class CubeMeasure(BaseModel):
     description: Optional[str] = None
 
 
+class CubeRefreshKey(BaseModel):
+    """Represents a Cube.js refresh_key configuration"""
+    every: Optional[str] = None
+    sql: Optional[str] = None
+    incremental: Optional[bool] = None
+    update_window: Optional[str] = None
+
+
+class CubePreAggregation(BaseModel):
+    """Represents a Cube.js pre-aggregation"""
+    name: str
+    type: str = "rollup"
+    measures: Optional[List[str]] = None
+    dimensions: Optional[List[str]] = None
+    time_dimension: Optional[str] = None
+    granularity: Optional[str] = None
+    refresh_key: Optional[CubeRefreshKey] = None
+
+
 class CubeSchema(BaseModel):
     """Represents a complete Cube.js schema"""
     cube_name: str
     sql: str
     dimensions: List[CubeDimension]
     measures: List[CubeMeasure]
+    pre_aggregations: List[CubePreAggregation] = []
 
 
 class SyncResult(BaseModel):

@@ -147,5 +147,36 @@ cube(`CoursePerformanceSummary`, {
       sql: `(${avg_attendance} * 0.6 + ${avg_grade_points} * 25)`,
       title: 'Student Engagement Score'
     }
+  },
+  
+  pre_aggregations: {
+    course_performance_realtime: {
+      type: `rollup`,
+      measures: [average_course_gpa, total_course_enrollments],
+      dimensions: [department_name, semester_name],
+      time_dimension: semester_start_date,
+      granularity: `month`,
+      refresh_key: {
+        sql: `SELECT MAX(semester_end_date) FROM ${CUBE}`
+      }
+    },
+
+    course_performance_daily: {
+      type: `rollup`,
+      measures: [course_pass_rate, student_engagement_score],
+      dimensions: [department_name],
+      refresh_key: {
+        every: `1 day`
+      }
+    },
+
+    course_performance_hourly: {
+      type: `rollup`,
+      measures: [total_course_enrollments],
+      dimensions: [performance_category],
+      refresh_key: {
+        every: `30 minutes`
+      }
+    }
   }
 });

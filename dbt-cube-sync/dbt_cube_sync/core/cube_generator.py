@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 from jinja2 import Environment, FileSystemLoader, Template
 
-from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure
+from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey
 from .dbt_parser import DbtParser
 
 
@@ -98,11 +98,36 @@ class CubeGenerator:
             )
             measures.append(measure)
         
+        # Convert pre-aggregations
+        pre_aggregations = []
+        for pre_agg_name, pre_agg_data in model.pre_aggregations.items():
+            # Convert refresh_key if present
+            refresh_key = None
+            if pre_agg_data.refresh_key:
+                refresh_key = CubeRefreshKey(
+                    every=pre_agg_data.refresh_key.every,
+                    sql=pre_agg_data.refresh_key.sql,
+                    incremental=pre_agg_data.refresh_key.incremental,
+                    update_window=pre_agg_data.refresh_key.update_window
+                )
+            
+            pre_aggregation = CubePreAggregation(
+                name=pre_agg_name,
+                type=pre_agg_data.type,
+                measures=pre_agg_data.measures,
+                dimensions=pre_agg_data.dimensions,
+                time_dimension=pre_agg_data.time_dimension,
+                granularity=pre_agg_data.granularity,
+                refresh_key=refresh_key
+            )
+            pre_aggregations.append(pre_aggregation)
+        
         return CubeSchema(
             cube_name=cube_name,
             sql=sql,
             dimensions=dimensions,
-            measures=measures
+            measures=measures,
+            pre_aggregations=pre_aggregations
         )
     
     def _write_cube_file(self, cube_schema: CubeSchema) -> Path:
@@ -116,7 +141,8 @@ class CubeGenerator:
                 cube_name=cube_schema.cube_name,
                 sql=cube_schema.sql,
                 dimensions=cube_schema.dimensions,
-                measures=cube_schema.measures
+                measures=cube_schema.measures,
+                pre_aggregations=cube_schema.pre_aggregations
             )
         else:
             # Fallback to hardcoded template
@@ -152,11 +178,76 @@ class CubeGenerator:
     }}"""
             measures_content.append(measure_content)
         
+        # Generate pre-aggregations
+        pre_aggregations_content = []
+        for pre_agg in cube_schema.pre_aggregations:
+            pre_agg_parts = [f"      type: `{pre_agg.type}`"]
+            
+            if pre_agg.measures:
+                measures_list = ', '.join([f'{measure}' for measure in pre_agg.measures])
+                pre_agg_parts.append(f"      measures: [{measures_list}]")
+            
+            if pre_agg.dimensions:
+                dims_list = ', '.join([f'{dim}' for dim in pre_agg.dimensions])
+                pre_agg_parts.append(f"      dimensions: [{dims_list}]")
+                
+            if pre_agg.time_dimension:
+                pre_agg_parts.append(f"      time_dimension: {pre_agg.time_dimension}")
+                
+            if pre_agg.granularity:
+                pre_agg_parts.append(f"      granularity: `{pre_agg.granularity}`")
+                
+            if pre_agg.refresh_key:
+                refresh_key_parts = []
+                if pre_agg.refresh_key.every:
+                    refresh_key_parts.append(f"        every: `{pre_agg.refresh_key.every}`")
+                if pre_agg.refresh_key.sql:
+                    # Replace ${this} with the actual table reference
+                    sql_with_this = pre_agg.refresh_key.sql.replace('${this}', '${CUBE}')
+                    refresh_key_parts.append(f"        sql: `{sql_with_this}`")
+                if pre_agg.refresh_key.incremental is not None:
+                    refresh_key_parts.append(f"        incremental: {str(pre_agg.refresh_key.incremental).lower()}")
+                if pre_agg.refresh_key.update_window:
+                    refresh_key_parts.append(f"        update_window: `{pre_agg.refresh_key.update_window}`")
+                
+                if refresh_key_parts:
+                    refresh_key_content = ',\n'.join(refresh_key_parts)
+                    pre_agg_parts.append(f"      refresh_key: {{\n{refresh_key_content}\n      }}")
+            
+            parts_joined = ',\n'.join(pre_agg_parts)
+            pre_agg_content = f"""    {pre_agg.name}: {{
+{parts_joined}
+    }}"""
+            pre_aggregations_content.append(pre_agg_content)
+        
         # Combine into full cube definition
         dimensions_joined = ',\n\n'.join(dimensions_content)
         measures_joined = ',\n\n'.join(measures_content)
         
-        content = f"""cube(`{cube_schema.cube_name}`, {{
+        # Ensure we have measures (required for a useful Cube.js schema)
+        if not measures_content:
+            raise ValueError(f"Cube {cube_schema.cube_name} has no measures defined. Measures are required for Cube.js schemas.")
+        
+        if pre_aggregations_content:
+            pre_aggregations_joined = ',\n\n'.join(pre_aggregations_content)
+            content = f"""cube(`{cube_schema.cube_name}`, {{
+  sql: `{cube_schema.sql}`,
+  
+  dimensions: {{
+{dimensions_joined}
+  }},
+  
+  measures: {{
+{measures_joined}
+  }},
+  
+  pre_aggregations: {{
+{pre_aggregations_joined}
+  }}
+}});
+"""
+        else:
+            content = f"""cube(`{cube_schema.cube_name}`, {{
   sql: `{cube_schema.sql}`,
   
   dimensions: {{
