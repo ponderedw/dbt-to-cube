@@ -78,6 +78,7 @@ models:
           granularity: month
           refresh_key:
             sql: "SELECT MAX(semester_end_date) FROM ${this}"
+            every: "1 minute"
         
         # Daily refresh rollup
         course_performance_daily:

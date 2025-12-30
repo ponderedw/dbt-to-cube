@@ -157,6 +157,7 @@ cube(`CoursePerformanceSummary`, {
       time_dimension: CUBE.semester_start_date,
       granularity: `month`,
       refresh_key: {
+        every: `1 minute`,
         sql: `SELECT MAX(semester_end_date) FROM public.course_performance_summary`
       }
     },
