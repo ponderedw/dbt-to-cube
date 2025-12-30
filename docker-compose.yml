@@ -49,6 +49,12 @@ services:
       - .:/dbt
     working_dir: /usr/app/dbt
 
+  cubestore:
+    image: cubejs/cubestore:latest
+    restart: always
+    ports:
+      - 3030:3030
+
   cube_api:
     restart: always
     image: cubejs/cube:latest
@@ -63,6 +69,8 @@ services:
         condition: service_healthy
       dbt:
         condition: service_completed_successfully
+      cubestore:
+        condition: service_started
 
   dbt-cube-sync:
     build:
@@ -136,6 +144,104 @@ services:
     restart: "no"
     networks:
       - default
+
+  metabase:
+    image: metabase/metabase:latest
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: dbt_user
+      MB_DB_PASS: dbt_password
+      MB_DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  metabase-setup:
+    image: curlimages/curl:latest
+    depends_on:
+      metabase:
+        condition: service_healthy
+      cube_api:
+        condition: service_started
+    restart: "no"
+    command: >
+      sh -c '
+        echo "Waiting for Metabase to be fully ready...";
+        sleep 30;
+
+        echo "Setting up Metabase admin user...";
+        SETUP_TOKEN=$$(curl -s http://metabase:3000/api/session/properties | grep -o "\"setup-token\":\"[^\"]*\"" | cut -d"\"" -f4);
+
+        if [ -n "$$SETUP_TOKEN" ]; then
+          echo "Setup token found: $$SETUP_TOKEN";
+
+          curl -X POST http://metabase:3000/api/setup \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"token\": \"$$SETUP_TOKEN\",
+              \"user\": {
+                \"first_name\": \"Admin\",
+                \"last_name\": \"User\",
+                \"email\": \"admin@example.com\",
+                \"password\": \"CubeAdmin2024!\",
+                \"site_name\": \"Cube Analytics\"
+              },
+              \"prefs\": {
+                \"site_name\": \"Cube Analytics\",
+                \"allow_tracking\": false
+              }
+            }";
+
+          echo "Getting session token...";
+          SESSION_TOKEN=$$(curl -X POST http://metabase:3000/api/session \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"admin@example.com\", \"password\": \"CubeAdmin2024!\"}" | grep -o "\"id\":\"[^\"]*\"" | cut -d"\"" -f4);
+
+          if [ -n "$$SESSION_TOKEN" ]; then
+            echo "Session token obtained: $$SESSION_TOKEN";
+
+            echo "Adding Cube.js database connection...";
+            curl -X POST http://metabase:3000/api/database \
+              -H "Content-Type: application/json" \
+              -H "X-Metabase-Session: $$SESSION_TOKEN" \
+              -d "{
+                \"name\": \"Cube.js\",
+                \"engine\": \"postgres\",
+                \"details\": {
+                  \"host\": \"cube_api\",
+                  \"port\": 15432,
+                  \"dbname\": \"db\",
+                  \"user\": \"root\",
+                  \"password\": \"\",
+                  \"ssl\": false,
+                  \"tunnel-enabled\": false
+                },
+                \"auto_run_queries\": true,
+                \"is_full_sync\": true,
+                \"schedules\": {}
+              }";
+
+            echo "Metabase setup completed successfully!";
+          else
+            echo "Failed to get session token";
+          fi
+        else
+          echo "Metabase already configured or setup token not available";
+        fi;
+
+        echo "Setup complete. Check Metabase at http://localhost:3000";
+      '
 
 volumes:
   postgres_data:

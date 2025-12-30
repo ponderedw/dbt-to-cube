@@ -5,7 +5,8 @@ cube(`CoursePerformanceSummary`, {
     course_id: {
       sql: `course_id`,
       type: `number`,
-      title: 'Unique identifier for the course'
+      title: 'Unique identifier for the course',
+      primaryKey: true
     },
 
     course_code: {
@@ -146,6 +147,38 @@ cube(`CoursePerformanceSummary`, {
       type: `avg`,
       sql: `(${avg_attendance} * 0.6 + ${avg_grade_points} * 25)`,
       title: 'Student Engagement Score'
+    }
+  },
+  
+  pre_aggregations: {
+    course_performance_realtime: {
+      type: `rollup`,
+      measures: [CUBE.average_course_gpa, CUBE.total_course_enrollments],
+      dimensions: [CUBE.department_name, CUBE.semester_name],
+      time_dimension: CUBE.semester_start_date,
+      granularity: `month`,
+      refresh_key: {
+        every: `1 minute`,
+        sql: `SELECT MAX(semester_end_date) FROM public.course_performance_summary`
+      }
+    },
+
+    course_performance_daily: {
+      type: `rollup`,
+      measures: [CUBE.course_pass_rate, CUBE.student_engagement_score],
+      dimensions: [CUBE.department_name],
+      refresh_key: {
+        every: `1 day`
+      }
+    },
+
+    course_performance_hourly: {
+      type: `rollup`,
+      measures: [CUBE.total_course_enrollments],
+      dimensions: [CUBE.performance_category],
+      refresh_key: {
+        every: `30 minutes`
+      }
     }
   }
 });

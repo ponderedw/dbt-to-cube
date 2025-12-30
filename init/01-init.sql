@@ -7,6 +7,9 @@
 -- Create Superset database
 CREATE DATABASE superset_db;
 
+-- Create Metabase database
+CREATE DATABASE metabase;
+
 -- Connect to the education_dw database and create schemas
 \c education_dw;
 
