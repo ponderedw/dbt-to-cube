@@ -152,19 +152,19 @@ cube(`CoursePerformanceSummary`, {
   pre_aggregations: {
     course_performance_realtime: {
       type: `rollup`,
-      measures: [average_course_gpa, total_course_enrollments],
-      dimensions: [department_name, semester_name],
-      time_dimension: semester_start_date,
+      measures: [CUBE.average_course_gpa, CUBE.total_course_enrollments],
+      dimensions: [CUBE.department_name, CUBE.semester_name],
+      time_dimension: CUBE.semester_start_date,
       granularity: `month`,
       refresh_key: {
-        sql: `SELECT MAX(semester_end_date) FROM ${CUBE}`
+        sql: `SELECT MAX(semester_end_date) FROM public.course_performance_summary`
       }
     },
 
     course_performance_daily: {
       type: `rollup`,
-      measures: [course_pass_rate, student_engagement_score],
-      dimensions: [department_name],
+      measures: [CUBE.course_pass_rate, CUBE.student_engagement_score],
+      dimensions: [CUBE.department_name],
       refresh_key: {
         every: `1 day`
       }
@@ -172,8 +172,8 @@ cube(`CoursePerformanceSummary`, {
 
     course_performance_hourly: {
       type: `rollup`,
-      measures: [total_course_enrollments],
-      dimensions: [performance_category],
+      measures: [CUBE.total_course_enrollments],
+      dimensions: [CUBE.performance_category],
       refresh_key: {
         every: `30 minutes`
       }

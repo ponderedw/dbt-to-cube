@@ -157,7 +157,12 @@ class CubeGenerator:
     
     def _generate_cube_content(self, cube_schema: CubeSchema) -> str:
         """Generate Cube.js content using hardcoded template"""
-        
+
+        # Extract table name from SQL for refresh_key replacement
+        import re
+        table_name_match = re.search(r'FROM\s+([^\s,;]+)', cube_schema.sql, re.IGNORECASE)
+        table_name = table_name_match.group(1) if table_name_match else None
+
         # Generate dimensions
         dimensions_content = []
         for dim in cube_schema.dimensions:
@@ -184,15 +189,15 @@ class CubeGenerator:
             pre_agg_parts = [f"      type: `{pre_agg.type}`"]
             
             if pre_agg.measures:
-                measures_list = ', '.join([f'{measure}' for measure in pre_agg.measures])
+                measures_list = ', '.join([f'CUBE.{measure}' for measure in pre_agg.measures])
                 pre_agg_parts.append(f"      measures: [{measures_list}]")
-            
+
             if pre_agg.dimensions:
-                dims_list = ', '.join([f'{dim}' for dim in pre_agg.dimensions])
+                dims_list = ', '.join([f'CUBE.{dim}' for dim in pre_agg.dimensions])
                 pre_agg_parts.append(f"      dimensions: [{dims_list}]")
-                
+
             if pre_agg.time_dimension:
-                pre_agg_parts.append(f"      time_dimension: {pre_agg.time_dimension}")
+                pre_agg_parts.append(f"      time_dimension: CUBE.{pre_agg.time_dimension}")
                 
             if pre_agg.granularity:
                 pre_agg_parts.append(f"      granularity: `{pre_agg.granularity}`")
@@ -202,9 +207,12 @@ class CubeGenerator:
                 if pre_agg.refresh_key.every:
                     refresh_key_parts.append(f"        every: `{pre_agg.refresh_key.every}`")
                 if pre_agg.refresh_key.sql:
-                    # Replace ${this} with the actual table reference
-                    sql_with_this = pre_agg.refresh_key.sql.replace('${this}', '${CUBE}')
-                    refresh_key_parts.append(f"        sql: `{sql_with_this}`")
+                    # Replace ${CUBE} and ${this} with actual table name
+                    refresh_sql = pre_agg.refresh_key.sql
+                    if table_name:
+                        refresh_sql = refresh_sql.replace('${CUBE}', table_name)
+                        refresh_sql = refresh_sql.replace('${this}', table_name)
+                    refresh_key_parts.append(f"        sql: `{refresh_sql}`")
                 if pre_agg.refresh_key.incremental is not None:
                     refresh_key_parts.append(f"        incremental: {str(pre_agg.refresh_key.incremental).lower()}")
                 if pre_agg.refresh_key.update_window:
