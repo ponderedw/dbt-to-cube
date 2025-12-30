@@ -26,6 +26,7 @@ fastapi/markdown_common_schema.md
 pgdata
 logs
 private.env
+.private.env
 .DS_Store
 dbt_graph_loader.egg-info
 .vscode

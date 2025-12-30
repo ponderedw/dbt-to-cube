@@ -1,0 +1,22 @@
+---
+
+services:
+  fastapi:
+    container_name: cube-rag-api
+    env_file:
+      - .private.env
+    build:
+      context: ./cube-to-rag
+      dockerfile: Dockerfile
+    volumes:
+      - ./cube-to-rag:/code
+    ports:
+      - "8081:8080"
+    depends_on:
+      milvus:
+        condition: service_healthy
+      cube_api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: always
