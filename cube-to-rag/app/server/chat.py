@@ -5,14 +5,13 @@ from fastapi.responses import StreamingResponse
 from typing import Dict, List
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.tools.retriever import create_retriever_tool
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_community.agent_toolkits.load_tools import load_tools
 
 from cube_to_rag.core.llm import get_llm
-from cube_to_rag.core.schema_embeddings import get_schema_embeddings
+from cube_to_rag.core.config import settings
 from cube_to_rag.models.chat import ChatMessage
+from cube_to_rag.tools import get_cube_schema_search_tool, get_cube_graphql_tools, CUBE_GRAPHQL_INSTRUCTIONS
 
 chat_router = APIRouter()
 
@@ -73,78 +72,27 @@ async def ask_question(message: ChatMessage, request: Request):
             # Initialize LLM and tools
             llm = get_llm()
 
-            # Create retriever for cube schemas
-            schema_embeddings = get_schema_embeddings()
-            retriever = schema_embeddings.as_retriever(k=2)
-
-            # Create retriever tool
-            schema_search_tool = create_retriever_tool(
-                retriever,
-                "cube_schema_search",
-                "Searches and retrieves Cube.js schema information including cube names, dimensions, and measures. "
-                "Use this tool FIRST before querying data to discover what cubes, dimensions, and measures are available. "
-                "Input should be a natural language description of the data you're looking for "
-                "(e.g., 'course performance metrics', 'student enrollment data').",
-                document_prompt=PromptTemplate(
-                    template_format='jinja2',
-                    input_variables=['cube_name', 'dimensions', 'measures', 'page_content'],
-                    template='Cube: {{cube_name}}\n'
-                             'Dimensions: {{dimensions}}\n'
-                             'Measures: {{measures}}\n\n'
-                             '{{page_content}}',
-                ),
-                document_separator='\n---\n',
-            )
-
-            # Load LangChain's built-in GraphQL tool
-            graphql_tools = load_tools(
-                ["graphql"],
-                graphql_endpoint="http://cube_api:4000/cubejs-api/graphql",
-                llm=llm
+            # Create Cube.js tools
+            schema_search_tool = get_cube_schema_search_tool(k=2)
+            graphql_tools = get_cube_graphql_tools(
+                graphql_endpoint=settings.cube_graphql_url,
+                llm=llm,
+                api_token=settings.cube_api_token
             )
 
             tools = [schema_search_tool] + graphql_tools
 
             # Create agent prompt
+            system_message = "You are a helpful analytics assistant with access to Cube.js data."
+            system_message += CUBE_GRAPHQL_INSTRUCTIONS
+            system_message += "\n\nYour job is to:\n"
+            system_message += "- Search for relevant schemas using cube_schema_search\n"
+            system_message += "- Pass the discovered cube/dimension/measure names to cube_graphql_query\n"
+            system_message += "- Explain the results clearly\n\n"
+            system_message += "Always explain your reasoning and findings."
+
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a helpful analytics assistant with access to Cube.js data via GraphQL.
-
-IMPORTANT - Two-Step Process:
-1. ALWAYS use the cube_schema_search tool FIRST to discover available cubes, dimensions, and measures
-2. THEN use the cube_graphql_query tool to retrieve the actual data
-
-Never guess or assume cube names, dimensions, or measures - always discover them first through search.
-
-Workflow for answering questions:
-1. Analyze the user's question to understand what data they need
-2. Use cube_schema_search with a natural language description (e.g., "course performance metrics")
-3. Review the search results to identify relevant cubes, dimensions, and measures
-4. Construct a GraphQL query using the discovered schema information
-5. Execute the query using cube_graphql_query
-6. Explain the results in a clear, conversational way
-
-GraphQL Query Format:
-query {{
-  cube {{
-    cubeName {{
-      measureName
-      dimensionName
-      timeDimension {{
-        year
-        month
-      }}
-    }}
-  }}
-}}
-
-Example workflow:
-User: "What's the average GPA?"
-1. Search: cube_schema_search("average GPA grades performance")
-2. Discover: CoursePerformanceSummary cube with average_course_gpa measure
-3. Query: cube_graphql_query with proper GraphQL syntax
-4. Explain results
-
-Always explain your reasoning and the data you found."""),
+                ("system", system_message),
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),

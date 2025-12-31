@@ -24,11 +24,22 @@ class CubeSchemaEmbeddings:
         self.vector_store = None
         self.cube_meta_url = f"{settings.cube_api_url}/meta"
 
+        # Build Milvus connection args with authentication if provided
+        self.connection_args = {"uri": settings.milvus_server_uri}
+        if settings.milvus_password:
+            self.connection_args["token"] = f"{settings.milvus_user}:{settings.milvus_password}"
+
     def _fetch_cubes_from_api(self) -> List[Dict[str, Any]]:
         """Fetch cube metadata from Cube.js API."""
         try:
             print(f"📡 Fetching metadata from {self.cube_meta_url}")
-            response = requests.get(self.cube_meta_url, timeout=10)
+
+            # Build headers with authentication if token is provided
+            headers = {}
+            if settings.cube_api_token:
+                headers["Authorization"] = settings.cube_api_token
+
+            response = requests.get(self.cube_meta_url, headers=headers, timeout=10)
             response.raise_for_status()
 
             data = response.json()
@@ -137,7 +148,7 @@ Use this cube for queries about: {cube_title.lower()}
             documents=documents,
             embedding=self.embeddings,
             collection_name=self.collection_name,
-            connection_args={"uri": settings.milvus_server_uri},
+            connection_args=self.connection_args,
             drop_old=True  # Replace existing collection
         )
 
@@ -150,7 +161,7 @@ Use this cube for queries about: {cube_title.lower()}
             self.vector_store = Milvus(
                 embedding_function=self.embeddings,
                 collection_name=self.collection_name,
-                connection_args={"uri": settings.milvus_server_uri}
+                connection_args=self.connection_args
             )
         return self.vector_store
 

@@ -21,10 +21,40 @@ class Settings(BaseSettings):
 
     # Vector Database
     milvus_server_uri: str = os.getenv('MILVUS_SERVER_URI', 'http://milvus-standalone:19530')
+    milvus_user: str = os.getenv('MILVUS_USER', 'root')
+    milvus_password: Optional[str] = os.getenv('MILVUS_PASSWORD')
 
     # Cube.js API
-    cube_graphql_url: str = os.getenv('CUBE_GRAPHQL_URL', 'http://cube_api:4000/cubejs-api/graphql')
-    cube_api_url: str = os.getenv('CUBE_API_URL', 'http://cube_api:4000/cubejs-api/v1')
+    cube_url: str = os.getenv('CUBE_URL', 'http://cube_api:4000')
+    cube_api_secret: Optional[str] = os.getenv('CUBEJS_API_SECRET')
+
+    @property
+    def cube_graphql_url(self) -> str:
+        """Construct Cube.js GraphQL URL."""
+        return f"{self.cube_url}/cubejs-api/graphql"
+
+    @property
+    def cube_api_url(self) -> str:
+        """Construct Cube.js REST API URL."""
+        return f"{self.cube_url}/cubejs-api/v1"
+
+    @property
+    def cube_api_token(self) -> Optional[str]:
+        """Generate JWT token from Cube.js API secret."""
+        if not self.cube_api_secret:
+            return None
+
+        try:
+            import jwt
+            import time
+
+            payload = {
+                "exp": int(time.time()) + (30 * 24 * 3600)  # 30 days
+            }
+            return jwt.encode(payload, self.cube_api_secret, algorithm="HS256")
+        except ImportError:
+            print("Warning: PyJWT not installed, cannot generate Cube.js token")
+            return None
 
     # Cube.js SQL API
     cube_sql_host: str = os.getenv('CUBE_SQL_HOST', 'cube_api')
