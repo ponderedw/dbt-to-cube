@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "cube-to-rag"
+version = "0.1.0a1"
+description = "RAG system for Cube.js analytics with vector search capabilities"
+readme = "README.md"
+packages = [{include = "cube_to_rag"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+langchain = "^0.3.7"
+langchain-community = "^0.3.7"
+langchain-openai = "^0.2.8"
+langchain-anthropic = "^0.2.4"
+langchain-aws = "^0.2.6"
+langchain-milvus = "^0.1.5"
+pymilvus = "^2.4.0"
+psycopg2-binary = "^2.9.9"
+pydantic = "^2.9.2"
+pydantic-settings = "^2.6.0"
+python-dotenv = "^1.0.1"
+requests = "^2.32.3"
+itsdangerous = "^2.1.2"
+jinja2 = "^3.1.2"
+gql = "^3.5.0"
+pyjwt = "^2.8.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+black = "^24.10.0"
+ruff = "^0.7.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+cube-rag = "cube_to_rag.cli:main"

@@ -1,0 +1,99 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  docker-fastapi:
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            src:
+              - 'cube-to-rag/**'
+              - 'cube-to-rag/Dockerfile'
+              - 'cube-to-rag/pyproject.toml'
+      -
+        name: Login to Docker Hub
+        uses: docker/login-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Generate timestamp
+        id: timestamp
+        run: echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Build and push FastAPI
+        uses: docker/build-push-action@v6
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          context: ./cube-to-rag
+          file: ./cube-to-rag/Dockerfile
+          push: true
+          tags: pondered/cube-rag-api:latest,pondered/cube-rag-api:${{ steps.timestamp.outputs.timestamp }}
+          platforms: linux/amd64,linux/arm64
+
+  docker-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            src:
+              - 'streamlit/**'
+              - 'streamlit/.Dockerfile'
+              - 'streamlit/requirements.txt'
+      -
+        name: Login to Docker Hub
+        uses: docker/login-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Generate timestamp
+        id: timestamp
+        run: echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+      -
+        name: Build and push Streamlit
+        uses: docker/build-push-action@v6
+        if: steps.changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          context: .
+          file: ./streamlit/.Dockerfile
+          push: true
+          tags: pondered/cube-chat-ui:latest,pondered/cube-chat-ui:${{ steps.timestamp.outputs.timestamp }}
+          platforms: linux/amd64,linux/arm64

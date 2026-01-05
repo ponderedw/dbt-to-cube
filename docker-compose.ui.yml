@@ -1,0 +1,17 @@
+---
+
+services:
+  chat_ui:
+    container_name: cube-chat-ui
+    env_file:
+      - .private.env
+    ports:
+      - "8501:8501"
+    build:
+      context: .
+      dockerfile: streamlit/.Dockerfile
+    volumes:
+      - ./streamlit:/app/streamlit
+    depends_on:
+      - fastapi
+    restart: always
