@@ -1,8 +1,7 @@
 [tool.poetry]
 name = "cube-to-rag"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "RAG system for Cube.js analytics with vector search capabilities"
-authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
 packages = [{include = "cube_to_rag"}]
 

@@ -3,6 +3,54 @@ import os
 import requests
 import datetime
 import dateutil.relativedelta
+import hashlib
+
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        expected_password = os.environ.get('STREAMLIT_PASSWORD', '')
+
+        # If no password is set in environment, allow access
+        if not expected_password:
+            st.session_state["password_correct"] = True
+            return
+
+        # Hash the entered password for comparison
+        entered_password = st.session_state["password"]
+
+        if entered_password == expected_password:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if password is already correct
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show input for password
+    st.markdown("## 🔐 Cube.js Analytics Chat - Login")
+    st.markdown("Please enter the password to access the application.")
+
+    st.text_input(
+        "Password",
+        type="password",
+        on_change=password_entered,
+        key="password",
+    )
+
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Password incorrect")
+
+    return False
+
+
+# Check password before showing the app
+if not check_password():
+    st.stop()
 
 
 if "http_session" not in st.session_state:

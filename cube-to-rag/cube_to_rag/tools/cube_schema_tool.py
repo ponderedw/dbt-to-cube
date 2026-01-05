@@ -9,16 +9,22 @@ from pydantic import Field
 from cube_to_rag.core.schema_embeddings import get_schema_embeddings
 
 
-def get_cube_schema_search_tool(k: int = 3):
+def get_cube_schema_search_tool(k: int = 7):
     """
     Create a LangChain tool for searching Cube.js schemas.
 
     This tool enables semantic search through Cube.js cube definitions,
-    dimensions, and measures. Use this before querying Cube.js to discover
-    what data is available.
+    dimensions, and measures. Documents are split into granular chunks including:
+    - Cube overviews
+    - Individual measure details
+    - Individual dimension details
+    - Summary catalogs (all cubes, all metrics, all dimensions)
+    - GraphQL query examples
+
+    Use this before querying Cube.js to discover what data is available.
 
     Args:
-        k: Number of relevant cubes to return (default: 3)
+        k: Number of relevant documents to return (default: 7, increased for granular chunks)
 
     Returns:
         LangChain Tool for Cube.js schema search
@@ -34,7 +40,7 @@ def get_cube_schema_search_tool(k: int = 3):
         from cube_to_rag.tools.cube_graphql_tool import get_cube_graphql_tool
 
         # Create tools for Cube.js
-        schema_search = get_cube_schema_search_tool(k=2)
+        schema_search = get_cube_schema_search_tool(k=7)
         graphql_query = get_cube_graphql_tool()
 
         # Or use LangChain's built-in GraphQL tool
@@ -77,7 +83,7 @@ Never guess cube names - always search first!'''),
     # Create retriever
     retriever = schema_embeddings.as_retriever(k=k)
 
-    # Create retriever tool with Jinja2 formatting
+    # Create retriever tool - page_content already has all formatted info with context
     schema_search_tool = create_retriever_tool(
         retriever,
         "cube_schema_search",
@@ -85,15 +91,7 @@ Never guess cube names - always search first!'''),
         "Use this tool FIRST before querying data to discover what cubes, dimensions, and measures are available. "
         "Input should be a natural language description of the data you're looking for "
         "(e.g., 'course performance metrics', 'student enrollment data').",
-        document_prompt=PromptTemplate(
-            template_format='jinja2',
-            input_variables=['cube_name', 'dimensions', 'measures', 'page_content'],
-            template='Cube: {{cube_name}}\n'
-                     'Dimensions: {{dimensions}}\n'
-                     'Measures: {{measures}}\n\n'
-                     '{{page_content}}',
-        ),
-        document_separator='\n---\n',
+        document_separator='\n\n---\n\n',
     )
 
     return schema_search_tool
@@ -112,15 +110,16 @@ class CubeSchemaSearchTool(BaseTool):
     Search Cube.js schemas to discover available cubes, dimensions, and measures.
 
     Input: Natural language description of data you're looking for
-    Output: Relevant cube schemas with their fields
+    Output: Relevant cube schemas with their fields (includes granular chunks like
+            cube overviews, measure details, dimension details, and summary catalogs)
 
     Always use this BEFORE constructing GraphQL queries to discover what's available.
     """
 
-    k: int = Field(default=3, description="Number of results to return")
+    k: int = Field(default=7, description="Number of results to return")
     _embeddings: Optional[Any] = None
 
-    def __init__(self, k: int = 3, **kwargs):
+    def __init__(self, k: int = 7, **kwargs):
         """Initialize cube schema search tool."""
         super().__init__(k=k, **kwargs)
 
