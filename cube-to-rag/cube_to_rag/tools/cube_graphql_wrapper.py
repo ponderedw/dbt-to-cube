@@ -8,16 +8,24 @@ from langchain.tools import BaseTool
 # Cube.js-specific instructions for the agent prompt
 CUBE_GRAPHQL_INSTRUCTIONS = """
 
-IMPORTANT - Two-Step Process:
+CRITICAL - Two-Step Process:
 1. ALWAYS use cube_schema_search tool FIRST to discover available cubes, dimensions, and measures
-2. THEN use cube_graphql_query tool to execute the query
+2. THEN use cube_graphql_query tool with the EXACT field names from the search results
+
+⚠️ FIELD NAME RULES - EXTREMELY IMPORTANT:
+- Use EXACT field names AS SHOWN in the schema search results
+- DO NOT convert snake_case to camelCase or vice versa
+- DO NOT guess or modify field names
+- If search shows "school_year", use "school_year" (NOT "schoolYear")
+- If search shows "studentId", use "studentId" (NOT "student_id")
+- Copy field names EXACTLY character-by-character from the retrieved schema
 
 GraphQL Query Format for Cube.js:
 query {{
   cube {{
     cubeName {{
-      measureName
-      dimensionName
+      exact_measure_name
+      exact_dimension_name
       timeDimension {{
         year
         month
@@ -27,14 +35,14 @@ query {{
 }}
 
 Example workflow:
-User: "What's the average GPA?"
-1. Search: cube_schema_search("average GPA grades performance")
-2. Discover: CoursePerformanceSummary cube with average_course_gpa measure
-3. Query: cube_graphql_query with proper GraphQL syntax
+User: "What school years are available?"
+1. Search: cube_schema_search("school year")
+2. Retrieved schema shows: dimension "school_year" (note the underscore!)
+3. Query: Use "school_year" EXACTLY as shown - DO NOT change to "schoolYear"
 4. Explain results
 
-The cube_graphql_query tool already knows how to construct Cube.js GraphQL queries.
-Never guess cube names - always discover them first through search."""
+REMEMBER: The cube_graphql_query tool will fail if you use incorrect field names.
+Always copy field names EXACTLY from the schema search results."""
 
 
 def get_cube_graphql_tools(

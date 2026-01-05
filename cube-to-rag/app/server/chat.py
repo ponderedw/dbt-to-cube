@@ -73,7 +73,7 @@ async def ask_question(message: ChatMessage, request: Request):
             llm = get_llm()
 
             # Create Cube.js tools
-            schema_search_tool = get_cube_schema_search_tool(k=2)
+            schema_search_tool = get_cube_schema_search_tool(k=5)
             graphql_tools = get_cube_graphql_tools(
                 graphql_endpoint=settings.cube_graphql_url,
                 llm=llm,
