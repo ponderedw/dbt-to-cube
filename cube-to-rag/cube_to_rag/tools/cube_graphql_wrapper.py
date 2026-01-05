@@ -21,6 +21,8 @@ CRITICAL - Two-Step Process:
 - Copy field names EXACTLY character-by-character from the retrieved schema
 
 GraphQL Query Format for Cube.js:
+
+Basic query:
 query {{
   cube {{
     cubeName {{
@@ -29,6 +31,37 @@ query {{
       timeDimension {{
         year
         month
+      }}
+    }}
+  }}
+}}
+
+Query with filtering (use 'where' clause):
+query CubeQuery {{
+  cube(
+    where: {{cubeName: {{dimension_name: {{in: ["value1", "value2"]}}}}}}
+  ) {{
+    cubeName {{
+      dimension_name
+      measure_name
+    }}
+  }}
+}}
+
+Real example with filtering:
+query CubeQuery {{
+  cube(
+    where: {{coursePerformanceSummary: {{instructor_name: {{in: ["Emily Davis", "John Smith"]}}}}}}
+  ) {{
+    coursePerformanceSummary {{
+      course_code
+      course_name
+      department_name
+      excellence_rate_percentage
+      performance_category
+      semester_end_date {{
+        value
+        year
       }}
     }}
   }}

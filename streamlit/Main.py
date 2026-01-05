@@ -53,11 +53,14 @@ if not check_password():
     st.stop()
 
 
+# Get FastAPI URL from environment or use default
+FASTAPI_URL = os.environ.get('FASTAPI_URL', 'http://fastapi:8080')
+
 if "http_session" not in st.session_state:
     st.session_state.http_session = requests.Session()
     # Initialize session with FastAPI backend
     response = st.session_state.http_session.post(
-        "http://fastapi:8080/chat/new",
+        f"{FASTAPI_URL}/chat/new",
         headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')}
     )
     response.raise_for_status()
@@ -65,7 +68,7 @@ if "http_session" not in st.session_state:
 
 def get_chat_response(prompt):
     """Stream chat response from FastAPI backend."""
-    url = "http://fastapi:8080/chat/ask/"
+    url = f"{FASTAPI_URL}/chat/ask/"
     start_time = datetime.datetime.now()
     with st.session_state.http_session.post(
             url,
