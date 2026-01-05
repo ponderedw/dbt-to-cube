@@ -30,3 +30,4 @@ private.env
 dbt_graph_loader.egg-info
 .vscode
 .cubestore
+.private.env
