@@ -49,6 +49,12 @@ services:
       - .:/dbt
     working_dir: /usr/app/dbt
 
+  cubestore:
+    image: cubejs/cubestore:latest
+    restart: always
+    ports:
+      - 3030:3030
+
   cube_api:
     restart: always
     image: cubejs/cube:latest
@@ -63,6 +69,8 @@ services:
         condition: service_healthy
       dbt:
         condition: service_completed_successfully
+      cubestore:
+        condition: service_started
 
   dbt-cube-sync:
     build:

@@ -6,7 +6,7 @@ import os
 from typing import Dict, List
 from pathlib import Path
 
-from .models import DbtModel, DbtColumn, DbtMetric
+from .models import DbtModel, DbtColumn, DbtMetric, DbtPreAggregation, DbtRefreshKey
 
 
 class DbtParser:
@@ -61,7 +61,8 @@ class DbtParser:
                 continue
             
             model = self._parse_model(node_id, node_data)
-            if model and model.columns and model.metrics:  # Only include models with BOTH columns AND metrics
+            # Include models that have columns AND metrics (measures are required for useful Cube.js schemas)
+            if model and model.columns and model.metrics:
                 models.append(model)
         
         return models
@@ -78,13 +79,17 @@ class DbtParser:
         # Parse metrics from config.meta.metrics
         metrics = self._parse_metrics(node_data)
         
+        # Parse pre-aggregations from config.meta.pre_aggregations
+        pre_aggregations = self._parse_pre_aggregations(node_data)
+        
         return DbtModel(
             name=model_name,
             database=model_database,
             schema_name=model_schema,
             node_id=node_id,
             columns=columns,
-            metrics=metrics
+            metrics=metrics,
+            pre_aggregations=pre_aggregations
         )
     
     def _parse_columns(self, node_id: str, node_data: dict) -> Dict[str, DbtColumn]:
@@ -144,6 +149,40 @@ class DbtParser:
                 )
         
         return metrics
+    
+    def _parse_pre_aggregations(self, node_data: dict) -> Dict[str, DbtPreAggregation]:
+        """Parse pre-aggregations from model configuration"""
+        pre_aggregations = {}
+        
+        # Look for pre-aggregations in config.meta.pre_aggregations
+        config = node_data.get('config', {})
+        meta = config.get('meta', {})
+        pre_aggs_data = meta.get('pre_aggregations', {})
+        
+        for pre_agg_name, pre_agg_config in pre_aggs_data.items():
+            if isinstance(pre_agg_config, dict):
+                # Parse refresh_key if present
+                refresh_key = None
+                refresh_key_config = pre_agg_config.get('refresh_key')
+                if refresh_key_config and isinstance(refresh_key_config, dict):
+                    refresh_key = DbtRefreshKey(
+                        every=refresh_key_config.get('every'),
+                        sql=refresh_key_config.get('sql'),
+                        incremental=refresh_key_config.get('incremental'),
+                        update_window=refresh_key_config.get('update_window')
+                    )
+                
+                pre_aggregations[pre_agg_name] = DbtPreAggregation(
+                    name=pre_agg_name,
+                    type=pre_agg_config.get('type', 'rollup'),
+                    measures=pre_agg_config.get('measures', []),
+                    dimensions=pre_agg_config.get('dimensions', []),
+                    time_dimension=pre_agg_config.get('time_dimension'),
+                    granularity=pre_agg_config.get('granularity'),
+                    refresh_key=refresh_key
+                )
+        
+        return pre_aggregations
     
     @staticmethod
     def map_dbt_type_to_cube_type(dbt_type: str) -> str:
