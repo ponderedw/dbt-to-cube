@@ -77,15 +77,23 @@ async def ask_question(message: ChatMessage, request: Request):
             graphql_tools = get_cube_graphql_tools(
                 graphql_endpoint=settings.cube_graphql_url,
                 llm=llm,
-                api_token=settings.cube_api_token
+                api_token=settings.cube_api_token,
+                max_retries=settings.cube_graphql_max_retries,
+                retry_delay=settings.cube_graphql_retry_delay
             )
 
             tools = [schema_search_tool] + graphql_tools
 
             # Create agent prompt
-            system_message = "You are a helpful analytics assistant with access to Cube.js data."
+            system_message = "You are a helpful analytics assistant with access to Cube.js data.\n\n"
+
+            system_message += "✨ IMPORTANT NOTES:\n"
+            system_message += "- The cube_graphql_query tool has built-in retry logic for pre-aggregation delays\n"
+            system_message += "- If you see a message about 'pre-aggregations building', the tool is handling it automatically\n"
+            system_message += "- Just wait for the tool to complete - it will retry automatically\n\n"
+
             system_message += CUBE_GRAPHQL_INSTRUCTIONS
-            system_message += "\n\nYour job is to:\n"
+            system_message += "\n\n🎯 Your job is to:\n"
             system_message += "- Search for relevant schemas using cube_schema_search\n"
             system_message += "- Pass the discovered cube/dimension/measure names to cube_graphql_query\n"
             system_message += "- Explain the results clearly\n\n"

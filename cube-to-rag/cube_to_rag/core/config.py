@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     cube_sql_user: str = os.getenv('CUBE_SQL_USER', 'root')
     cube_sql_password: str = os.getenv('CUBE_SQL_PASSWORD', '')
 
+    # Cube.js GraphQL Retry Configuration
+    cube_graphql_max_retries: int = int(os.getenv('CUBE_GRAPHQL_MAX_RETRIES', '3'))
+    cube_graphql_retry_delay: int = int(os.getenv('CUBE_GRAPHQL_RETRY_DELAY', '5'))
+
     # Security
     secret_key: str = os.getenv('SECRET_KEY', 'change-me-in-production')
     fast_api_access_secret_token: str = os.getenv('FAST_API_ACCESS_SECRET_TOKEN', 'change-me-in-production')
