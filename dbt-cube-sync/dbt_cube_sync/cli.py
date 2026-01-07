@@ -24,10 +24,12 @@ class CustomGroup(click.Group):
             click.echo("\nAvailable commands:")
             click.echo("  dbt-cube-sync --help                                    # Show help")
             click.echo("  dbt-cube-sync --version                                 # Show version")
-            click.echo("  dbt-cube-sync dbt-to-cube -m manifest -c catalog -o output # Generate Cube.js schemas")
+            click.echo("  dbt-cube-sync dbt-to-cube -m manifest -c catalog -o output # Generate with catalog")
+            click.echo("  dbt-cube-sync dbt-to-cube -m manifest -s postgresql://user:pass@host/db -o output # Generate with database")
+            click.echo("  dbt-cube-sync dbt-to-cube -m manifest -s <uri> --models model1,model2 -o output # Filter specific models")
             click.echo("  dbt-cube-sync cube-to-bi superset -c cubes -u url -n user -p pass -d Cube # Sync to BI tool")
             ctx.exit(1)
-        
+
         return super().get_command(ctx, cmd_name)
 
 
@@ -39,35 +41,66 @@ def main():
 
 
 @main.command()
-@click.option('--manifest', '-m', 
+@click.option('--manifest', '-m',
               required=True,
               help='Path to dbt manifest.json file')
 @click.option('--catalog', '-c',
-              required=True,
-              help='Path to dbt catalog.json file')
+              required=False,
+              default=None,
+              help='Path to dbt catalog.json file (optional if --sqlalchemy-uri is provided)')
+@click.option('--sqlalchemy-uri', '-s',
+              required=False,
+              default=None,
+              help='SQLAlchemy database URI for fetching column types (e.g., postgresql://user:pass@host:port/db)')
+@click.option('--models',
+              required=False,
+              default=None,
+              help='Comma-separated list of model names to process (e.g., model1,model2). If not specified, processes all models')
 @click.option('--output', '-o',
               required=True,
               help='Output directory for Cube.js files')
 @click.option('--template-dir', '-t',
               default='./cube/templates',
               help='Directory containing Cube.js templates')
-def dbt_to_cube(manifest: str, catalog: str, output: str, template_dir: str):
+def dbt_to_cube(manifest: str, catalog: Optional[str], sqlalchemy_uri: Optional[str], models: Optional[str], output: str, template_dir: str):
     """Generate Cube.js schemas from dbt models"""
     try:
+        # Validate that at least one source of column types is provided
+        if not catalog and not sqlalchemy_uri:
+            click.echo("❌ Error: You must provide either --catalog or --sqlalchemy-uri to get column data types", err=True)
+            click.echo("💡 Example with catalog: dbt-cube-sync dbt-to-cube -m manifest.json -c catalog.json -o output/", err=True)
+            click.echo("💡 Example with database: dbt-cube-sync dbt-to-cube -m manifest.json -s postgresql://user:pass@host:port/db -o output/", err=True)
+            sys.exit(1)
+
+        # Parse model filter if provided
+        model_filter = None
+        if models:
+            model_filter = [m.strip() for m in models.split(',')]
+            click.echo(f"🎯 Filtering models: {', '.join(model_filter)}")
+
         click.echo("🔄 Parsing dbt manifest...")
-        parser = DbtParser(manifest, catalog)
-        models = parser.parse_models()
-        
-        click.echo(f"📊 Found {len(models)} dbt models")
-        
+        parser = DbtParser(
+            manifest_path=manifest,
+            catalog_path=catalog,
+            sqlalchemy_uri=sqlalchemy_uri,
+            model_filter=model_filter
+        )
+        parsed_models = parser.parse_models()
+
+        click.echo(f"📊 Found {len(parsed_models)} dbt models")
+
+        if len(parsed_models) == 0:
+            click.echo("⚠️  No models found. Make sure your models have both columns and metrics defined.")
+            sys.exit(0)
+
         click.echo("🏗️  Generating Cube.js schemas...")
         generator = CubeGenerator(template_dir, output)
-        generated_files = generator.generate_cube_files(models)
-        
+        generated_files = generator.generate_cube_files(parsed_models)
+
         click.echo(f"✅ Generated {len(generated_files)} Cube.js files:")
         for file_path in generated_files:
             click.echo(f"   • {file_path}")
-            
+
     except Exception as e:
         click.echo(f"❌ Error: {str(e)}", err=True)
         sys.exit(1)

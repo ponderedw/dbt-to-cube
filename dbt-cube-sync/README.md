@@ -5,6 +5,8 @@ A powerful synchronization tool that creates a seamless pipeline from dbt models
 ## Features
 
 - 🔄 **dbt → Cube.js**: Auto-generate Cube.js schemas from dbt models with metrics
+- 🗃️ **Flexible Data Type Source**: Get column types from catalog OR directly from database via SQLAlchemy
+- 🎯 **Model Filtering**: Process specific models instead of all models
 - 📊 **Cube.js → BI Tools**: Sync schemas to multiple BI platforms
 - 🏗️ **Extensible Architecture**: Plugin-based connector system for easy BI tool integration
 - 🐳 **Docker Support**: Containerized execution with orchestration support
@@ -26,6 +28,27 @@ poetry install
 poetry run dbt-cube-sync --help
 ```
 
+### Database Drivers (for SQLAlchemy URI feature)
+
+If you want to use the `--sqlalchemy-uri` option to fetch column types directly from your database, you'll need to install the appropriate database driver:
+
+```bash
+# PostgreSQL
+poetry add psycopg2-binary
+
+# MySQL
+poetry add pymysql
+
+# Snowflake
+poetry add snowflake-sqlalchemy
+
+# BigQuery
+poetry add sqlalchemy-bigquery
+
+# Redshift
+poetry add sqlalchemy-redshift
+```
+
 ### Using Docker
 
 ```bash
@@ -35,42 +58,43 @@ docker run --rm dbt-cube-sync --help
 
 ## Quick Start
 
-### 1. Create Configuration File
+### 1. Generate Cube.js Schemas from dbt
 
+**Option A: Using catalog file (traditional method)**
 ```bash
-# Create sample config
-dbt-cube-sync create-config sync-config.yaml
-
-# Edit the config file with your BI tool credentials
+dbt-cube-sync dbt-to-cube \
+  --manifest ./target/manifest.json \
+  --catalog ./target/catalog.json \
+  --output ./cube_output
 ```
 
-### 2. Generate Cube.js Schemas
-
+**Option B: Using database connection (no catalog needed)**
 ```bash
-# Generate from dbt manifest
-dbt-cube-sync generate-cubes \\
-  --dbt-manifest ./DbtEducationalDataProject/target/manifest.json \\
-  --output-dir ./cube/conf/cube_output
+dbt-cube-sync dbt-to-cube \
+  --manifest ./target/manifest.json \
+  --sqlalchemy-uri postgresql://user:password@localhost:5432/mydb \
+  --output ./cube_output
 ```
 
-### 3. Sync to BI Tool
+**Option C: Filter specific models**
+```bash
+dbt-cube-sync dbt-to-cube \
+  --manifest ./target/manifest.json \
+  --sqlalchemy-uri postgresql://user:password@localhost:5432/mydb \
+  --models orders,customers,products \
+  --output ./cube_output
+```
+
+### 2. Sync to BI Tool (Optional)
 
 ```bash
 # Sync to Superset
-dbt-cube-sync sync-bi superset \\
-  --cube-dir ./cube/conf/cube_output \\
-  --config-file ./sync-config.yaml
-```
-
-### 4. Full Pipeline
-
-```bash
-# Complete dbt → Cube.js → Superset pipeline
-dbt-cube-sync full-sync \\
-  --dbt-manifest ./DbtEducationalDataProject/target/manifest.json \\
-  --cube-dir ./cube/conf/cube_output \\
-  --bi-connector superset \\
-  --config-file ./sync-config.yaml
+dbt-cube-sync cube-to-bi superset \
+  --cube-files ./cube_output \
+  --url http://localhost:8088 \
+  --username admin \
+  --password admin \
+  --cube-connection-name Cube
 ```
 
 ## Configuration
@@ -99,23 +123,50 @@ connectors:
 
 ## CLI Commands
 
-### `generate-cubes`
+### `dbt-to-cube`
 Generate Cube.js schema files from dbt models.
 
 **Options:**
-- `--dbt-manifest` / `-m`: Path to dbt manifest.json file
-- `--output-dir` / `-o`: Output directory for Cube.js files
-- `--template-dir` / `-t`: Directory containing Cube.js templates
+- `--manifest` / `-m`: Path to dbt manifest.json file (required)
+- `--catalog` / `-c`: Path to dbt catalog.json file (optional if --sqlalchemy-uri is provided)
+- `--sqlalchemy-uri` / `-s`: SQLAlchemy database URI for fetching column types (optional if --catalog is provided)
+  - Example: `postgresql://user:password@localhost:5432/database`
+  - Example: `mysql://user:password@localhost:3306/database`
+  - Example: `snowflake://user:password@account/database/schema`
+- `--models`: Comma-separated list of model names to process (optional, processes all if not specified)
+  - Example: `--models model1,model2,model3`
+- `--output` / `-o`: Output directory for Cube.js files (required)
+- `--template-dir` / `-t`: Directory containing Cube.js templates (default: ./cube/templates)
 
-### `sync-bi`
+**Examples:**
+```bash
+# Using catalog file
+dbt-cube-sync dbt-to-cube -m manifest.json -c catalog.json -o output/
+
+# Using database connection (no catalog needed)
+dbt-cube-sync dbt-to-cube -m manifest.json -s postgresql://user:pass@localhost/db -o output/
+
+# Filter specific models
+dbt-cube-sync dbt-to-cube -m manifest.json -s postgresql://user:pass@localhost/db --models users,orders -o output/
+```
+
+### `cube-to-bi`
 Sync Cube.js schemas to BI tool datasets.
 
 **Arguments:**
-- `connector`: BI tool type (`superset`, `tableau`, `powerbi`)
+- `bi_tool`: BI tool type (`superset`, `tableau`, `powerbi`)
 
 **Options:**
-- `--cube-dir` / `-c`: Directory containing Cube.js files
-- `--config-file` / `-f`: Configuration file for BI tool connection
+- `--cube-files` / `-c`: Directory containing Cube.js files (required)
+- `--url` / `-u`: BI tool URL (required)
+- `--username` / `-n`: BI tool username (required)
+- `--password` / `-p`: BI tool password (required)
+- `--cube-connection-name` / `-d`: Name of Cube database connection in BI tool (default: Cube)
+
+**Example:**
+```bash
+dbt-cube-sync cube-to-bi superset -c cube_output/ -u http://localhost:8088 -n admin -p admin -d Cube
+```
 
 ### `full-sync`
 Complete pipeline: dbt models → Cube.js schemas → BI tool datasets.
@@ -150,6 +201,7 @@ dbt-cube-sync/
 │   ├── config.py             # Configuration management
 │   ├── core/
 │   │   ├── dbt_parser.py     # dbt manifest parser
+│   │   ├── db_inspector.py   # Database column type inspector (SQLAlchemy)
 │   │   ├── cube_generator.py # Cube.js generator
 │   │   └── models.py         # Pydantic data models
 │   └── connectors/
