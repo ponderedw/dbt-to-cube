@@ -123,34 +123,101 @@ connectors:
 
 ## CLI Commands
 
+### Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `sync-all` | **Ultimate command** - Incremental sync: dbt → Cube.js → Superset → RAG |
+| `dbt-to-cube` | Generate Cube.js schemas from dbt models (with incremental support) |
+| `cube-to-bi` | Sync Cube.js schemas to BI tools (Superset, Tableau, PowerBI) |
+
+---
+
+### `sync-all` (Recommended)
+
+**Ultimate incremental sync command** - handles the complete pipeline with state tracking.
+
+```bash
+# Basic incremental sync (Cube.js only)
+dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output
+
+# Full pipeline: dbt → Cube.js → Superset
+dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output \
+  --superset-url http://localhost:8088 \
+  --superset-username admin \
+  --superset-password admin
+
+# Full pipeline: dbt → Cube.js → Superset → RAG embeddings
+dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output \
+  --superset-url http://localhost:8088 \
+  --superset-username admin \
+  --superset-password admin \
+  --rag-api-url http://localhost:8000
+
+# Force full rebuild (ignore state)
+dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output --force-full-sync
+```
+
+**Options:**
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--manifest, -m` | Yes | Path to dbt manifest.json |
+| `--catalog, -c` | No* | Path to dbt catalog.json |
+| `--sqlalchemy-uri, -s` | No* | Database URI for column types |
+| `--output, -o` | Yes | Output directory for Cube.js files |
+| `--state-path` | No | State file path (default: `.dbt-cube-sync-state.json`) |
+| `--force-full-sync` | No | Force full rebuild, ignore state |
+| `--superset-url` | No | Superset URL |
+| `--superset-username` | No | Superset username |
+| `--superset-password` | No | Superset password |
+| `--cube-connection-name` | No | Cube database name in Superset (default: `Cube`) |
+| `--rag-api-url` | No | RAG API URL for embedding updates |
+
+*Either `--catalog` or `--sqlalchemy-uri` is required.
+
+**How Incremental Sync Works:**
+1. Reads state file (`.dbt-cube-sync-state.json`) with model checksums
+2. Compares against current manifest to detect changes
+3. Only processes **added** or **modified** models
+4. Deletes Cube.js files for **removed** models
+5. Updates state file with new checksums
+
+---
+
 ### `dbt-to-cube`
-Generate Cube.js schema files from dbt models.
+
+Generate Cube.js schema files from dbt models with incremental support.
 
 **Options:**
 - `--manifest` / `-m`: Path to dbt manifest.json file (required)
-- `--catalog` / `-c`: Path to dbt catalog.json file (optional if --sqlalchemy-uri is provided)
-- `--sqlalchemy-uri` / `-s`: SQLAlchemy database URI for fetching column types (optional if --catalog is provided)
-  - Example: `postgresql://user:password@localhost:5432/database`
-  - Example: `mysql://user:password@localhost:3306/database`
-  - Example: `snowflake://user:password@account/database/schema`
-- `--models`: Comma-separated list of model names to process (optional, processes all if not specified)
-  - Example: `--models model1,model2,model3`
+- `--catalog` / `-c`: Path to dbt catalog.json file
+- `--sqlalchemy-uri` / `-s`: SQLAlchemy database URI for fetching column types
+- `--models`: Comma-separated list of model names to process
 - `--output` / `-o`: Output directory for Cube.js files (required)
 - `--template-dir` / `-t`: Directory containing Cube.js templates (default: ./cube/templates)
+- `--state-path`: State file for incremental sync (default: `.dbt-cube-sync-state.json`)
+- `--force-full-sync`: Force full regeneration, ignore cached state
+- `--no-state`: Disable state tracking (legacy behavior)
 
 **Examples:**
 ```bash
-# Using catalog file
+# Incremental sync (default)
 dbt-cube-sync dbt-to-cube -m manifest.json -c catalog.json -o output/
+
+# Force full rebuild
+dbt-cube-sync dbt-to-cube -m manifest.json -c catalog.json -o output/ --force-full-sync
 
 # Using database connection (no catalog needed)
 dbt-cube-sync dbt-to-cube -m manifest.json -s postgresql://user:pass@localhost/db -o output/
 
 # Filter specific models
-dbt-cube-sync dbt-to-cube -m manifest.json -s postgresql://user:pass@localhost/db --models users,orders -o output/
+dbt-cube-sync dbt-to-cube -m manifest.json -c catalog.json -o output/ --models users,orders
 ```
 
+---
+
 ### `cube-to-bi`
+
 Sync Cube.js schemas to BI tool datasets.
 
 **Arguments:**
@@ -168,15 +235,29 @@ Sync Cube.js schemas to BI tool datasets.
 dbt-cube-sync cube-to-bi superset -c cube_output/ -u http://localhost:8088 -n admin -p admin -d Cube
 ```
 
-### `full-sync`
-Complete pipeline: dbt models → Cube.js schemas → BI tool datasets.
+---
 
-**Options:**
-- `--dbt-manifest` / `-m`: Path to dbt manifest.json file
-- `--cube-dir` / `-c`: Directory for Cube.js files
-- `--template-dir` / `-t`: Directory containing Cube.js templates
-- `--bi-connector` / `-b`: BI tool to sync to
-- `--config-file` / `-f`: Configuration file for BI tool connection
+## State File
+
+The state file (`.dbt-cube-sync-state.json`) tracks:
+
+```json
+{
+  "version": "1.0",
+  "last_sync_timestamp": "2024-01-15T10:30:00Z",
+  "manifest_path": "/path/to/manifest.json",
+  "models": {
+    "model.project.users": {
+      "checksum": "abc123...",
+      "has_metrics": true,
+      "last_generated": "2024-01-15T10:30:00Z",
+      "output_file": "./cube_output/Users.js"
+    }
+  }
+}
+```
+
+Delete this file to force a full rebuild, or use `--force-full-sync`.
 
 ## Architecture
 

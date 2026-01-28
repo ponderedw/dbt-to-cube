@@ -104,3 +104,19 @@ class SyncResult(BaseModel):
     status: str  # 'success' or 'failed'
     message: Optional[str] = None
     error: Optional[str] = None
+
+
+class ModelState(BaseModel):
+    """Represents the state of a single model for incremental sync"""
+    checksum: str
+    has_metrics: bool
+    last_generated: str
+    output_file: str
+
+
+class SyncState(BaseModel):
+    """Represents the overall state for incremental sync"""
+    version: str = "1.0"
+    last_sync_timestamp: str
+    manifest_path: str
+    models: Dict[str, ModelState] = {}

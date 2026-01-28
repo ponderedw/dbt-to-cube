@@ -29,27 +29,31 @@ class CubeGenerator:
         # Initialize Jinja2 environment
         self.env = Environment(loader=FileSystemLoader(str(self.template_dir)))
     
-    def generate_cube_files(self, models: List[DbtModel]) -> List[str]:
+    def generate_cube_files(
+        self, models: List[DbtModel], return_node_mapping: bool = False
+    ) -> Dict[str, str]:
         """
         Generate Cube.js files for all models
-        
+
         Args:
             models: List of DbtModel instances
-            
+            return_node_mapping: If True, returns dict mapping node_id -> file_path
+                                 If False (legacy), returns list of file paths
+
         Returns:
-            List of generated file paths
+            Dict mapping node_id -> file_path (for incremental sync support)
         """
-        generated_files = []
-        
+        generated_files = {}
+
         for model in models:
             try:
                 cube_schema = self._convert_model_to_cube(model)
                 file_path = self._write_cube_file(cube_schema)
-                generated_files.append(str(file_path))
-                print(f"✓ Generated: {file_path.name}")
+                generated_files[model.node_id] = str(file_path)
+                print(f"  Generated: {file_path.name}")
             except Exception as e:
-                print(f"✗ Error generating cube for {model.name}: {str(e)}")
-        
+                print(f"  Error generating cube for {model.name}: {str(e)}")
+
         return generated_files
     
     def _convert_model_to_cube(self, model: DbtModel) -> CubeSchema:

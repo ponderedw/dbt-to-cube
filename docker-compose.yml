@@ -78,6 +78,8 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/workspace
+      # Mount source code for development (allows changes without rebuild)
+      - ./dbt-cube-sync/dbt_cube_sync:/app/dbt_cube_sync
     working_dir: /workspace
     depends_on:
       dbt:

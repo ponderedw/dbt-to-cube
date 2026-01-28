@@ -57,9 +57,13 @@ class DbtParser:
             print(f"Warning: Could not load catalog file {self.catalog_path}: {e}")
             return None
     
-    def parse_models(self) -> List[DbtModel]:
+    def parse_models(self, node_ids_filter: Optional[List[str]] = None) -> List[DbtModel]:
         """
         Extract models with metrics and columns from manifest
+
+        Args:
+            node_ids_filter: Optional list of node_ids to parse (for incremental sync).
+                             If provided, only these specific nodes are processed.
 
         Returns:
             List of DbtModel instances
@@ -70,6 +74,10 @@ class DbtParser:
         for node_id, node_data in nodes.items():
             # Only process models
             if node_data.get('resource_type') != 'model':
+                continue
+
+            # Apply node_ids filter if specified (for incremental sync)
+            if node_ids_filter is not None and node_id not in node_ids_filter:
                 continue
 
             # Apply model filter if specified
@@ -87,6 +95,38 @@ class DbtParser:
             self.db_inspector.close()
 
         return models
+
+    def get_manifest_nodes_with_metrics(self) -> Dict[str, dict]:
+        """
+        Get all manifest nodes that have metrics defined.
+
+        This is used by the StateManager to compare checksums for incremental sync.
+
+        Returns:
+            Dict of node_id -> node_data for all models with metrics
+        """
+        nodes_with_metrics = {}
+        nodes = self.manifest.get('nodes', {})
+
+        for node_id, node_data in nodes.items():
+            # Only process models
+            if node_data.get('resource_type') != 'model':
+                continue
+
+            # Apply model filter if specified
+            model_name = node_data.get('name', '')
+            if self.model_filter and model_name not in self.model_filter:
+                continue
+
+            # Check if model has metrics defined
+            config = node_data.get('config', {})
+            meta = config.get('meta', {})
+            metrics = meta.get('metrics', {})
+
+            if metrics:
+                nodes_with_metrics[node_id] = node_data
+
+        return nodes_with_metrics
     
     def _parse_model(self, node_id: str, node_data: dict) -> DbtModel:
         """Parse a single model from the manifest"""
@@ -114,7 +154,14 @@ class DbtParser:
         )
     
     def _parse_columns(self, node_id: str, node_data: dict) -> Dict[str, DbtColumn]:
-        """Parse columns for a model, enhanced with catalog or database data if available"""
+        """
+        Parse columns for a model using hybrid metadata approach.
+
+        Priority order for column types:
+        1. Manifest `data_type` - When explicitly defined in dbt .yml files
+        2. Catalog `type` - When catalog.json is provided
+        3. SQLAlchemy Reflection - Fallback using database inspector
+        """
         columns = {}
         manifest_columns = node_data.get('columns', {})
 
@@ -123,23 +170,42 @@ class DbtParser:
         if self.catalog and node_id in self.catalog.get('nodes', {}):
             catalog_columns = self.catalog['nodes'][node_id].get('columns', {})
 
-        # Get database columns for type information (if db_inspector is available)
+        # Check if we need database lookup - only if we have columns missing types
+        need_db_lookup = False
+        if manifest_columns:
+            for col_name, col_data in manifest_columns.items():
+                # Check manifest data_type first
+                manifest_data_type = col_data.get('data_type')
+                if manifest_data_type:
+                    continue
+                # Check catalog
+                if col_name in catalog_columns and catalog_columns[col_name].get('type'):
+                    continue
+                # Need database lookup for this column
+                need_db_lookup = True
+                break
+
+        # Get database columns only if needed (lazy loading)
         db_columns = {}
-        if self.db_inspector and not self.catalog:
+        if need_db_lookup and self.db_inspector:
             schema = node_data.get('schema', '')
             table_name = node_data.get('name', '')
             if schema and table_name:
                 db_columns = self.db_inspector.get_table_columns(schema, table_name)
 
-        # If manifest has columns, use them with catalog or database type info
+        # If manifest has columns, use them with hybrid type resolution
         if manifest_columns:
             for col_name, col_data in manifest_columns.items():
                 data_type = None
 
-                # Try to get data type from catalog first
-                if col_name in catalog_columns:
+                # Priority 1: Manifest data_type (explicitly defined in dbt .yml)
+                manifest_data_type = col_data.get('data_type')
+                if manifest_data_type:
+                    data_type = manifest_data_type
+                # Priority 2: Catalog type
+                elif col_name in catalog_columns:
                     data_type = catalog_columns[col_name].get('type', '')
-                # Otherwise try database
+                # Priority 3: Database reflection
                 elif col_name in db_columns:
                     data_type = db_columns[col_name]
 
