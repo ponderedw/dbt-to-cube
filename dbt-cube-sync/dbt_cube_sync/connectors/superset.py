@@ -60,13 +60,19 @@ class SupersetConnector(BaseConnector):
         """Authenticate and get JWT token"""
         login_url = f"{self.base_url}/api/v1/security/login"
         payload = {
-            "username": self.config['username'],
             "password": self.config['password'],
             "provider": "db",
-            "refresh": True
+            "refresh": "true",
+            "username": self.config['username']
         }
-        
+
         response = self.session.post(login_url, json=payload)
+        if response.status_code == 401:
+            raise Exception(
+                f"Superset authentication failed (401). "
+                f"Check username/password and ensure provider='{payload['provider']}' is correct. "
+                f"Response: {response.text}"
+            )
         response.raise_for_status()
         
         data = response.json()
