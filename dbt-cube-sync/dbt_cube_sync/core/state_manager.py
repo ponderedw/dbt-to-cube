@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .models import ModelState, SyncState
+from .models import ModelState, StepState, SyncState
 
 
 class StateManager:
@@ -219,3 +219,65 @@ class StateManager:
                     files_to_delete.append(output_file)
 
         return files_to_delete
+
+    def should_run_step(
+        self,
+        step_name: str,
+        previous_state: Optional[SyncState],
+        changes_detected: bool,
+    ) -> bool:
+        """
+        Determine if a pipeline step should run.
+
+        A step should run if:
+        - There are changes detected, OR
+        - The previous run of this step failed
+
+        Args:
+            step_name: Name of the step ('cube_sync', 'superset_sync', 'rag_sync')
+            previous_state: Previous sync state
+            changes_detected: Whether model changes were detected
+
+        Returns:
+            True if the step should run
+        """
+        if changes_detected:
+            return True
+
+        if previous_state is None:
+            return True
+
+        step_state = getattr(previous_state, step_name, None)
+        if step_state is None:
+            return True
+
+        # Re-run if previous attempt failed
+        return step_state.status == 'failed'
+
+    def update_step_state(
+        self,
+        state: SyncState,
+        step_name: str,
+        status: str,
+        error: Optional[str] = None,
+    ) -> SyncState:
+        """
+        Update the state of a pipeline step.
+
+        Args:
+            state: Current sync state
+            step_name: Name of the step ('cube_sync', 'superset_sync', 'rag_sync')
+            status: Step status ('success', 'failed', 'skipped')
+            error: Error message if failed
+
+        Returns:
+            Updated SyncState
+        """
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        step_state = StepState(
+            status=status,
+            last_run=timestamp,
+            error=error,
+        )
+        setattr(state, step_name, step_state)
+        return state

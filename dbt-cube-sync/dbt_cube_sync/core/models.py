@@ -114,9 +114,20 @@ class ModelState(BaseModel):
     output_file: str
 
 
+class StepState(BaseModel):
+    """Represents the state of a pipeline step"""
+    status: str  # 'success', 'failed', 'skipped'
+    last_run: Optional[str] = None
+    error: Optional[str] = None
+
+
 class SyncState(BaseModel):
     """Represents the overall state for incremental sync"""
-    version: str = "1.0"
+    version: str = "1.1"
     last_sync_timestamp: str
     manifest_path: str
     models: Dict[str, ModelState] = {}
+    # Step states for tracking pipeline progress
+    cube_sync: Optional[StepState] = None
+    superset_sync: Optional[StepState] = None
+    rag_sync: Optional[StepState] = None

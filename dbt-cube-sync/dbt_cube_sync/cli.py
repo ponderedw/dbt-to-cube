@@ -357,20 +357,21 @@ def sync_all(
         modified_models = set()
         removed_models = set()
 
-        # ============================================================
-        # STEP 1: Incremental dbt → Cube.js sync
-        # ============================================================
-        click.echo("\n[1/3] dbt → Cube.js schemas")
-        click.echo("-" * 40)
-
-        # Initialize state manager
+        # Initialize state manager and load previous state
         state_manager = StateManager(state_path)
         previous_state = None
+        current_state = None
 
         if not force_full_sync:
             previous_state = state_manager.load_state()
             if previous_state:
                 click.echo(f"  Loaded state from {state_path}")
+
+        # ============================================================
+        # STEP 1: Incremental dbt → Cube.js sync
+        # ============================================================
+        click.echo("\n[1/3] dbt → Cube.js schemas")
+        click.echo("-" * 40)
 
         # Parse manifest
         parser = DbtParser(
@@ -414,65 +415,112 @@ def sync_all(
 
         # Generate Cube.js files for changed models
         generated_files = {}
-        if node_ids_to_process:
-            parsed_models = parser.parse_models(node_ids_filter=node_ids_to_process)
+        cube_sync_error = None
+        try:
+            if node_ids_to_process:
+                parsed_models = parser.parse_models(node_ids_filter=node_ids_to_process)
 
-            if parsed_models:
-                generator = CubeGenerator('./cube/templates', output)
-                generated_files = generator.generate_cube_files(parsed_models)
-                click.echo(f"  Generated {len(generated_files)} Cube.js files")
+                if parsed_models:
+                    generator = CubeGenerator('./cube/templates', output)
+                    generated_files = generator.generate_cube_files(parsed_models)
+                    click.echo(f"  Generated {len(generated_files)} Cube.js files")
+        except Exception as e:
+            cube_sync_error = str(e)
+            click.echo(f"  Error: {cube_sync_error}", err=True)
 
-        # Save state
+        # Build/update state
         if changes_detected or force_full_sync:
             if previous_state and not force_full_sync:
-                new_state = state_manager.merge_state(
+                current_state = state_manager.merge_state(
                     previous_state, manifest, manifest_nodes, generated_files, removed_models
                 )
             else:
-                new_state = state_manager.create_state_from_results(
+                current_state = state_manager.create_state_from_results(
                     manifest, manifest_nodes, generated_files
                 )
-            state_manager.save_state(new_state)
-            click.echo(f"  State saved to {state_path}")
+        else:
+            # No changes - use previous state or create empty one
+            current_state = previous_state or state_manager.create_state_from_results(
+                manifest, manifest_nodes, {}
+            )
+
+        # Update cube_sync step state
+        current_state = state_manager.update_step_state(
+            current_state,
+            'cube_sync',
+            'failed' if cube_sync_error else 'success',
+            cube_sync_error
+        )
+        state_manager.save_state(current_state)
+        click.echo(f"  State saved to {state_path}")
 
         # ============================================================
         # STEP 2: Sync to Superset (if configured)
         # ============================================================
-        if superset_url and superset_username and superset_password:
-            click.echo("\n[2/3] Cube.js → Superset")
-            click.echo("-" * 40)
+        click.echo("\n[2/3] Cube.js → Superset")
+        click.echo("-" * 40)
 
-            if not changes_detected and not force_full_sync:
-                click.echo("  Skipped - no changes detected")
-            else:
-                connector_config = {
-                    'url': superset_url,
-                    'username': superset_username,
-                    'password': superset_password,
-                    'database_name': cube_connection_name
-                }
-
-                connector = ConnectorRegistry.get_connector('superset', **connector_config)
-                results = connector.sync_cube_schemas(output)
-
-                successful = sum(1 for r in results if r.status == 'success')
-                failed = sum(1 for r in results if r.status == 'failed')
-                click.echo(f"  Synced: {successful} successful, {failed} failed")
-        else:
-            click.echo("\n[2/3] Cube.js → Superset")
-            click.echo("-" * 40)
+        if not superset_url or not superset_username or not superset_password:
             click.echo("  Skipped - no Superset credentials provided")
+            current_state = state_manager.update_step_state(current_state, 'superset_sync', 'skipped')
+            state_manager.save_state(current_state)
+        else:
+            should_run_superset = state_manager.should_run_step(
+                'superset_sync', previous_state, changes_detected
+            ) or force_full_sync
+
+            if not should_run_superset:
+                click.echo("  Skipped - no changes and previous sync succeeded")
+            else:
+                superset_error = None
+                try:
+                    connector_config = {
+                        'url': superset_url,
+                        'username': superset_username,
+                        'password': superset_password,
+                        'database_name': cube_connection_name
+                    }
+
+                    connector = ConnectorRegistry.get_connector('superset', **connector_config)
+                    results = connector.sync_cube_schemas(output)
+
+                    successful = sum(1 for r in results if r.status == 'success')
+                    failed = sum(1 for r in results if r.status == 'failed')
+                    click.echo(f"  Synced: {successful} successful, {failed} failed")
+
+                    if failed > 0:
+                        superset_error = f"{failed} datasets failed to sync"
+                except Exception as e:
+                    superset_error = str(e)
+                    click.echo(f"  Error: {superset_error}", err=True)
+
+                current_state = state_manager.update_step_state(
+                    current_state,
+                    'superset_sync',
+                    'failed' if superset_error else 'success',
+                    superset_error
+                )
+                state_manager.save_state(current_state)
 
         # ============================================================
         # STEP 3: Update RAG embeddings (if configured)
         # ============================================================
-        if rag_api_url:
-            click.echo("\n[3/3] Update RAG embeddings")
-            click.echo("-" * 40)
+        click.echo("\n[3/3] Update RAG embeddings")
+        click.echo("-" * 40)
 
-            if not changes_detected and not force_full_sync:
-                click.echo("  Skipped - no changes detected")
+        if not rag_api_url:
+            click.echo("  Skipped - no RAG API URL provided")
+            current_state = state_manager.update_step_state(current_state, 'rag_sync', 'skipped')
+            state_manager.save_state(current_state)
+        else:
+            should_run_rag = state_manager.should_run_step(
+                'rag_sync', previous_state, changes_detected
+            ) or force_full_sync
+
+            if not should_run_rag:
+                click.echo("  Skipped - no changes and previous sync succeeded")
             else:
+                rag_error = None
                 try:
                     # Call the RAG API to re-ingest embeddings
                     response = requests.post(
@@ -485,13 +533,19 @@ def sync_all(
                         result = response.json()
                         click.echo(f"  Ingested {result.get('schemas_ingested', 0)} schema documents")
                     else:
-                        click.echo(f"  Warning: RAG API returned {response.status_code}", err=True)
+                        rag_error = f"RAG API returned {response.status_code}"
+                        click.echo(f"  Error: {rag_error}", err=True)
                 except requests.RequestException as e:
-                    click.echo(f"  Warning: Could not reach RAG API: {e}", err=True)
-        else:
-            click.echo("\n[3/3] Update RAG embeddings")
-            click.echo("-" * 40)
-            click.echo("  Skipped - no RAG API URL provided")
+                    rag_error = str(e)
+                    click.echo(f"  Error: Could not reach RAG API: {rag_error}", err=True)
+
+                current_state = state_manager.update_step_state(
+                    current_state,
+                    'rag_sync',
+                    'failed' if rag_error else 'success',
+                    rag_error
+                )
+                state_manager.save_state(current_state)
 
         # ============================================================
         # Summary
@@ -500,12 +554,27 @@ def sync_all(
         click.echo("SYNC COMPLETE")
         click.echo("=" * 60)
 
+        # Show step statuses
+        click.echo(f"  Cube sync:     {current_state.cube_sync.status if current_state.cube_sync else 'unknown'}")
+        click.echo(f"  Superset sync: {current_state.superset_sync.status if current_state.superset_sync else 'unknown'}")
+        click.echo(f"  RAG sync:      {current_state.rag_sync.status if current_state.rag_sync else 'unknown'}")
+
         if changes_detected or force_full_sync:
             click.echo(f"  Models processed: {len(added_models) + len(modified_models)}")
             click.echo(f"  Models removed: {len(removed_models)}")
             click.echo(f"  Cube.js files generated: {len(generated_files)}")
         else:
-            click.echo("  No changes - everything is up to date")
+            click.echo("  No model changes detected")
+
+        # Exit with error if any step failed
+        any_failed = (
+            (current_state.cube_sync and current_state.cube_sync.status == 'failed') or
+            (current_state.superset_sync and current_state.superset_sync.status == 'failed') or
+            (current_state.rag_sync and current_state.rag_sync.status == 'failed')
+        )
+        if any_failed:
+            click.echo("\n  ⚠️  Some steps failed - they will be retried on next run")
+            sys.exit(1)
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
