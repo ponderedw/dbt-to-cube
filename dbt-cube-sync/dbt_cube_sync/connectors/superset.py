@@ -123,20 +123,30 @@ class SupersetConnector(BaseConnector):
         self.database_id = result[0]['id']
         print(f"✓ Found database '{database_name}' with ID: {self.database_id}")
     
-    def sync_cube_schemas(self, cube_dir: str) -> List[SyncResult]:
-        """Sync all Cube.js schemas from directory to Superset"""
+    def sync_cube_schemas(self, cube_dir: str, models_filter: set = None) -> List[SyncResult]:
+        """Sync Cube.js schemas from directory to Superset
+
+        Args:
+            cube_dir: Directory containing Cube.js schema files
+            models_filter: Optional set of model names to sync. If None, sync all.
+        """
         results = []
         cube_files = self._get_cube_files(cube_dir)
-        
+
         if not cube_files:
             return [SyncResult(
                 file_or_dataset="No files",
-                status="failed", 
+                status="failed",
                 message=f"No .js files found in {cube_dir}"
             )]
-        
-        print(f"🔍 Found {len(cube_files)} Cube.js files")
-        
+
+        # Filter files if models_filter is provided
+        if models_filter:
+            cube_files = [f for f in cube_files if f.stem in models_filter]
+            print(f"🔍 Syncing {len(cube_files)} Cube.js files (filtered from {len(self._get_cube_files(cube_dir))})")
+        else:
+            print(f"🔍 Found {len(cube_files)} Cube.js files")
+
         for cube_file in cube_files:
             try:
                 print(f"\\n{'='*60}")

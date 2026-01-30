@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .models import ModelState, StepState, SyncState
+from .models import ModelState, SyncState
 
 
 class StateManager:
@@ -179,15 +179,18 @@ class StateManager:
                 node_data.get("config", {}).get("meta", {}).get("metrics")
             )
 
+            # For newly generated/modified models, reset sync status (they need to be re-synced)
             models[node_id] = ModelState(
                 checksum=checksum,
                 has_metrics=has_metrics,
                 last_generated=timestamp,
                 output_file=output_file,
+                superset_sync_status=None,  # Reset - needs sync
+                rag_sync_status=None,  # Reset - needs sync
             )
 
         return SyncState(
-            version="1.0",
+            version="1.1",
             last_sync_timestamp=timestamp,
             manifest_path=str(manifest_path),
             models=models,
@@ -220,64 +223,80 @@ class StateManager:
 
         return files_to_delete
 
-    def should_run_step(
-        self,
-        step_name: str,
-        previous_state: Optional[SyncState],
-        changes_detected: bool,
-    ) -> bool:
-        """
-        Determine if a pipeline step should run.
-
-        A step should run if:
-        - There are changes detected, OR
-        - The previous run of this step failed
-
-        Args:
-            step_name: Name of the step ('cube_sync', 'superset_sync', 'rag_sync')
-            previous_state: Previous sync state
-            changes_detected: Whether model changes were detected
-
-        Returns:
-            True if the step should run
-        """
-        if changes_detected:
-            return True
-
-        if previous_state is None:
-            return True
-
-        step_state = getattr(previous_state, step_name, None)
-        if step_state is None:
-            return True
-
-        # Re-run if previous attempt failed
-        return step_state.status == 'failed'
-
-    def update_step_state(
+    def get_models_needing_sync(
         self,
         state: SyncState,
-        step_name: str,
-        status: str,
-        error: Optional[str] = None,
-    ) -> SyncState:
+        step: str,
+    ) -> Set[str]:
         """
-        Update the state of a pipeline step.
+        Get node_ids of models that need to be synced for a step.
+
+        A model needs sync if:
+        - Its sync status is None (never synced)
+        - Its sync status is 'failed' (needs retry)
 
         Args:
             state: Current sync state
-            step_name: Name of the step ('cube_sync', 'superset_sync', 'rag_sync')
-            status: Step status ('success', 'failed', 'skipped')
-            error: Error message if failed
+            step: Step name ('superset' or 'rag')
 
         Returns:
-            Updated SyncState
+            Set of node_ids that need syncing
         """
-        timestamp = datetime.utcnow().isoformat() + "Z"
-        step_state = StepState(
-            status=status,
-            last_run=timestamp,
-            error=error,
-        )
-        setattr(state, step_name, step_state)
-        return state
+        models_to_sync = set()
+        status_field = f"{step}_sync_status"
+
+        for node_id, model_state in state.models.items():
+            status = getattr(model_state, status_field, None)
+            if status is None or status == 'failed':
+                models_to_sync.add(node_id)
+
+        return models_to_sync
+
+    def update_model_sync_status(
+        self,
+        state: SyncState,
+        node_id: str,
+        step: str,
+        status: str,
+    ) -> None:
+        """
+        Update the sync status of a model for a specific step.
+
+        Args:
+            state: Current sync state
+            node_id: The model's node_id
+            step: Step name ('superset' or 'rag')
+            status: Status to set ('success' or 'failed')
+        """
+        if node_id in state.models:
+            status_field = f"{step}_sync_status"
+            setattr(state.models[node_id], status_field, status)
+
+    def get_sync_summary(
+        self,
+        state: SyncState,
+        step: str,
+    ) -> Dict[str, int]:
+        """
+        Get a summary of sync status for a step.
+
+        Args:
+            state: Current sync state
+            step: Step name ('superset' or 'rag')
+
+        Returns:
+            Dict with counts: {'success': N, 'failed': N, 'pending': N}
+        """
+        status_field = f"{step}_sync_status"
+        summary = {'success': 0, 'failed': 0, 'pending': 0}
+
+        for model_state in state.models.values():
+            status = getattr(model_state, status_field, None)
+            if status == 'success':
+                summary['success'] += 1
+            elif status == 'failed':
+                summary['failed'] += 1
+            else:
+                summary['pending'] += 1
+
+        return summary

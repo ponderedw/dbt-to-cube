@@ -112,13 +112,9 @@ class ModelState(BaseModel):
     has_metrics: bool
     last_generated: str
     output_file: str
-
-
-class StepState(BaseModel):
-    """Represents the state of a pipeline step"""
-    status: str  # 'success', 'failed', 'skipped'
-    last_run: Optional[str] = None
-    error: Optional[str] = None
+    # Per-model sync status for each step
+    superset_sync_status: Optional[str] = None  # 'success', 'failed', or None (not attempted)
+    rag_sync_status: Optional[str] = None  # 'success', 'failed', or None (not attempted)
 
 
 class SyncState(BaseModel):
@@ -127,7 +123,3 @@ class SyncState(BaseModel):
     last_sync_timestamp: str
     manifest_path: str
     models: Dict[str, ModelState] = {}
-    # Step states for tracking pipeline progress
-    cube_sync: Optional[StepState] = None
-    superset_sync: Optional[StepState] = None
-    rag_sync: Optional[StepState] = None

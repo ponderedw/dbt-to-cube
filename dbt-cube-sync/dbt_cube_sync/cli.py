@@ -444,15 +444,20 @@ def sync_all(
                 manifest, manifest_nodes, {}
             )
 
-        # Update cube_sync step state
-        current_state = state_manager.update_step_state(
-            current_state,
-            'cube_sync',
-            'failed' if cube_sync_error else 'success',
-            cube_sync_error
-        )
+        # Save cube sync state
         state_manager.save_state(current_state)
         click.echo(f"  State saved to {state_path}")
+
+        if cube_sync_error:
+            click.echo(f"  Error during cube generation: {cube_sync_error}", err=True)
+
+        # Build a mapping from model name (file stem) to node_id for status updates
+        model_name_to_node_id = {}
+        for node_id in current_state.models.keys():
+            # Extract model name from output file (e.g., "model/cubes/ModelName.js" -> "ModelName")
+            output_file = current_state.models[node_id].output_file
+            model_name = Path(output_file).stem
+            model_name_to_node_id[model_name] = node_id
 
         # ============================================================
         # STEP 2: Sync to Superset (if configured)
@@ -462,17 +467,21 @@ def sync_all(
 
         if not superset_url or not superset_username or not superset_password:
             click.echo("  Skipped - no Superset credentials provided")
-            current_state = state_manager.update_step_state(current_state, 'superset_sync', 'skipped')
-            state_manager.save_state(current_state)
         else:
-            should_run_superset = state_manager.should_run_step(
-                'superset_sync', previous_state, changes_detected
-            ) or force_full_sync
+            # Get models that need Superset sync (status is None or 'failed')
+            models_to_sync_ids = state_manager.get_models_needing_sync(current_state, 'superset')
 
-            if not should_run_superset:
-                click.echo("  Skipped - no changes and previous sync succeeded")
+            if not models_to_sync_ids and not force_full_sync:
+                click.echo("  Skipped - all models already synced successfully")
             else:
-                superset_error = None
+                # Convert node_ids to model names for filtering
+                models_to_sync_names = set()
+                for node_id in models_to_sync_ids:
+                    if node_id in current_state.models:
+                        output_file = current_state.models[node_id].output_file
+                        model_name = Path(output_file).stem
+                        models_to_sync_names.add(model_name)
+
                 try:
                     connector_config = {
                         'url': superset_url,
@@ -482,24 +491,34 @@ def sync_all(
                     }
 
                     connector = ConnectorRegistry.get_connector('superset', **connector_config)
-                    results = connector.sync_cube_schemas(output)
+
+                    if force_full_sync:
+                        results = connector.sync_cube_schemas(output)
+                    else:
+                        results = connector.sync_cube_schemas(output, models_to_sync_names)
+
+                    # Update per-model status
+                    for r in results:
+                        model_name = r.file_or_dataset.replace('.js', '')
+                        node_id = model_name_to_node_id.get(model_name)
+                        if node_id:
+                            state_manager.update_model_sync_status(
+                                current_state, node_id, 'superset',
+                                'success' if r.status == 'success' else 'failed'
+                            )
 
                     successful = sum(1 for r in results if r.status == 'success')
                     failed = sum(1 for r in results if r.status == 'failed')
                     click.echo(f"  Synced: {successful} successful, {failed} failed")
 
-                    if failed > 0:
-                        superset_error = f"{failed} datasets failed to sync"
                 except Exception as e:
-                    superset_error = str(e)
-                    click.echo(f"  Error: {superset_error}", err=True)
+                    click.echo(f"  Error: {str(e)}", err=True)
+                    # Mark all models we tried to sync as failed
+                    for node_id in models_to_sync_ids:
+                        state_manager.update_model_sync_status(
+                            current_state, node_id, 'superset', 'failed'
+                        )
 
-                current_state = state_manager.update_step_state(
-                    current_state,
-                    'superset_sync',
-                    'failed' if superset_error else 'success',
-                    superset_error
-                )
                 state_manager.save_state(current_state)
 
         # ============================================================
@@ -510,17 +529,16 @@ def sync_all(
 
         if not rag_api_url:
             click.echo("  Skipped - no RAG API URL provided")
-            current_state = state_manager.update_step_state(current_state, 'rag_sync', 'skipped')
-            state_manager.save_state(current_state)
         else:
-            should_run_rag = state_manager.should_run_step(
-                'rag_sync', previous_state, changes_detected
-            ) or force_full_sync
+            # Get models that need RAG sync (status is None or 'failed')
+            models_to_embed_ids = state_manager.get_models_needing_sync(current_state, 'rag')
 
-            if not should_run_rag:
-                click.echo("  Skipped - no changes and previous sync succeeded")
+            if not models_to_embed_ids and not force_full_sync:
+                click.echo("  Skipped - all models already synced successfully")
             else:
-                rag_error = None
+                if force_full_sync:
+                    models_to_embed_ids = set(current_state.models.keys())
+
                 try:
                     # Call the RAG API to re-ingest embeddings
                     response = requests.post(
@@ -532,19 +550,26 @@ def sync_all(
                     if response.status_code == 200:
                         result = response.json()
                         click.echo(f"  Ingested {result.get('schemas_ingested', 0)} schema documents")
+                        # Mark all models as succeeded
+                        for node_id in models_to_embed_ids:
+                            state_manager.update_model_sync_status(
+                                current_state, node_id, 'rag', 'success'
+                            )
                     else:
-                        rag_error = f"RAG API returned {response.status_code}"
-                        click.echo(f"  Error: {rag_error}", err=True)
+                        click.echo(f"  Error: RAG API returned {response.status_code}", err=True)
+                        # Mark all models as failed
+                        for node_id in models_to_embed_ids:
+                            state_manager.update_model_sync_status(
+                                current_state, node_id, 'rag', 'failed'
+                            )
                 except requests.RequestException as e:
-                    rag_error = str(e)
-                    click.echo(f"  Error: Could not reach RAG API: {rag_error}", err=True)
+                    click.echo(f"  Error: Could not reach RAG API: {e}", err=True)
+                    # Mark all models as failed
+                    for node_id in models_to_embed_ids:
+                        state_manager.update_model_sync_status(
+                            current_state, node_id, 'rag', 'failed'
+                        )
 
-                current_state = state_manager.update_step_state(
-                    current_state,
-                    'rag_sync',
-                    'failed' if rag_error else 'success',
-                    rag_error
-                )
                 state_manager.save_state(current_state)
 
         # ============================================================
@@ -554,10 +579,23 @@ def sync_all(
         click.echo("SYNC COMPLETE")
         click.echo("=" * 60)
 
-        # Show step statuses
-        click.echo(f"  Cube sync:     {current_state.cube_sync.status if current_state.cube_sync else 'unknown'}")
-        click.echo(f"  Superset sync: {current_state.superset_sync.status if current_state.superset_sync else 'unknown'}")
-        click.echo(f"  RAG sync:      {current_state.rag_sync.status if current_state.rag_sync else 'unknown'}")
+        # Get per-model sync summaries
+        superset_summary = state_manager.get_sync_summary(current_state, 'superset')
+        rag_summary = state_manager.get_sync_summary(current_state, 'rag')
+
+        def format_summary(summary, step_configured):
+            if not step_configured:
+                return "skipped (not configured)"
+            if summary['failed'] > 0:
+                return f"{summary['success']} success, {summary['failed']} failed (will retry)"
+            elif summary['pending'] > 0:
+                return f"{summary['success']} success, {summary['pending']} pending"
+            else:
+                return f"{summary['success']} success"
+
+        click.echo(f"  Cube.js files: {len(current_state.models)} models")
+        click.echo(f"  Superset sync: {format_summary(superset_summary, superset_url)}")
+        click.echo(f"  RAG sync:      {format_summary(rag_summary, rag_api_url)}")
 
         if changes_detected or force_full_sync:
             click.echo(f"  Models processed: {len(added_models) + len(modified_models)}")
@@ -566,14 +604,10 @@ def sync_all(
         else:
             click.echo("  No model changes detected")
 
-        # Exit with error if any step failed
-        any_failed = (
-            (current_state.cube_sync and current_state.cube_sync.status == 'failed') or
-            (current_state.superset_sync and current_state.superset_sync.status == 'failed') or
-            (current_state.rag_sync and current_state.rag_sync.status == 'failed')
-        )
+        # Exit with error if any models failed
+        any_failed = superset_summary['failed'] > 0 or rag_summary['failed'] > 0
         if any_failed:
-            click.echo("\n  ⚠️  Some steps failed - they will be retried on next run")
+            click.echo("\n  ⚠️  Some models failed - they will be retried on next run")
             sys.exit(1)
 
     except Exception as e:
