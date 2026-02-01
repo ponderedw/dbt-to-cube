@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cube-to-rag"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "RAG system for Cube.js analytics with vector search capabilities"
 readme = "README.md"
 packages = [{include = "cube_to_rag"}]
@@ -25,6 +25,7 @@ itsdangerous = "^2.1.2"
 jinja2 = "^3.1.2"
 gql = "^3.5.0"
 pyjwt = "^2.8.0"
+python-multipart = "^0.0.9"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"

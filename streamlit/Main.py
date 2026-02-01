@@ -3,7 +3,10 @@ import os
 import requests
 import datetime
 import dateutil.relativedelta
-import hashlib
+import json
+import re
+import plotly.graph_objects as go
+import plotly.express as px
 
 
 def check_password():
@@ -32,7 +35,7 @@ def check_password():
         return True
 
     # Show input for password
-    st.markdown("## 🔐 Cube.js Analytics Chat - Login")
+    st.markdown("## Cube.js Analytics Chat - Login")
     st.markdown("Please enter the password to access the application.")
 
     st.text_input(
@@ -43,7 +46,7 @@ def check_password():
     )
 
     if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-        st.error("😕 Password incorrect")
+        st.error("Password incorrect")
 
     return False
 
@@ -64,6 +67,149 @@ if "http_session" not in st.session_state:
         headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')}
     )
     response.raise_for_status()
+
+if "contexts" not in st.session_state:
+    st.session_state.contexts = []
+
+
+def upload_context_to_backend(content: str, name: str):
+    """Upload context to FastAPI backend."""
+    url = f"{FASTAPI_URL}/chat/context"
+    response = st.session_state.http_session.post(
+        url,
+        headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')},
+        data={"content": content, "name": name}
+    )
+    return response.json()
+
+
+def clear_contexts_from_backend():
+    """Clear all contexts from FastAPI backend."""
+    url = f"{FASTAPI_URL}/chat/context"
+    response = st.session_state.http_session.delete(
+        url,
+        headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')}
+    )
+    return response.json()
+
+
+def parse_chart_blocks(text: str):
+    """
+    Parse text for chart blocks and return list of content blocks.
+    Chart blocks are in format: ```chart {...json...} ```
+    """
+    pattern = r'```chart\s*\n?(.*?)\n?```'
+    blocks = []
+    last_end = 0
+
+    for match in re.finditer(pattern, text, re.DOTALL):
+        # Add text before this chart
+        if match.start() > last_end:
+            text_before = text[last_end:match.start()].strip()
+            if text_before:
+                blocks.append({"type": "text", "content": text_before})
+
+        # Parse the chart JSON
+        try:
+            chart_json = json.loads(match.group(1).strip())
+            blocks.append({"type": "chart", "content": chart_json})
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, treat as text
+            blocks.append({"type": "text", "content": f"```chart\n{match.group(1)}\n```"})
+
+        last_end = match.end()
+
+    # Add remaining text
+    if last_end < len(text):
+        remaining = text[last_end:].strip()
+        if remaining:
+            blocks.append({"type": "text", "content": remaining})
+
+    # If no blocks found, return the whole text
+    if not blocks:
+        blocks.append({"type": "text", "content": text})
+
+    return blocks
+
+
+def render_chart(chart_data: dict):
+    """Render a chart using Plotly based on chart specification."""
+    chart_type = chart_data.get("type", "bar").lower()
+    title = chart_data.get("title", "")
+    data = chart_data.get("data", {})
+    x_label = chart_data.get("x_label", "")
+    y_label = chart_data.get("y_label", "")
+
+    labels = data.get("labels", [])
+    values = data.get("values", [])
+    series = data.get("series", [])
+
+    fig = None
+
+    try:
+        if chart_type == "pie":
+            fig = go.Figure(data=[go.Pie(labels=labels, values=values)])
+            fig.update_layout(title=title)
+
+        elif chart_type == "bar":
+            if series:
+                fig = go.Figure()
+                for s in series:
+                    fig.add_trace(go.Bar(name=s.get("name", ""), x=labels, y=s.get("values", [])))
+                fig.update_layout(barmode='group')
+            else:
+                fig = go.Figure(data=[go.Bar(x=labels, y=values)])
+            fig.update_layout(title=title, xaxis_title=x_label, yaxis_title=y_label)
+
+        elif chart_type == "line":
+            if series:
+                fig = go.Figure()
+                for s in series:
+                    fig.add_trace(go.Scatter(name=s.get("name", ""), x=labels, y=s.get("values", []), mode='lines+markers'))
+            else:
+                fig = go.Figure(data=[go.Scatter(x=labels, y=values, mode='lines+markers')])
+            fig.update_layout(title=title, xaxis_title=x_label, yaxis_title=y_label)
+
+        elif chart_type == "area":
+            if series:
+                fig = go.Figure()
+                for s in series:
+                    fig.add_trace(go.Scatter(name=s.get("name", ""), x=labels, y=s.get("values", []), fill='tozeroy'))
+            else:
+                fig = go.Figure(data=[go.Scatter(x=labels, y=values, fill='tozeroy')])
+            fig.update_layout(title=title, xaxis_title=x_label, yaxis_title=y_label)
+
+        elif chart_type == "scatter":
+            if series:
+                fig = go.Figure()
+                for s in series:
+                    fig.add_trace(go.Scatter(name=s.get("name", ""), x=labels, y=s.get("values", []), mode='markers'))
+            else:
+                fig = go.Figure(data=[go.Scatter(x=labels, y=values, mode='markers')])
+            fig.update_layout(title=title, xaxis_title=x_label, yaxis_title=y_label)
+
+        else:
+            # Default to bar chart
+            fig = go.Figure(data=[go.Bar(x=labels, y=values)])
+            fig.update_layout(title=title, xaxis_title=x_label, yaxis_title=y_label)
+
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error rendering chart: {str(e)}")
+        st.json(chart_data)
+
+
+def render_response(response_text: str):
+    """Parse and render the response with charts and text."""
+    blocks = parse_chart_blocks(response_text)
+
+    for block in blocks:
+        if block["type"] == "text":
+            st.markdown(block["content"])
+        elif block["type"] == "chart":
+            render_chart(block["content"])
 
 
 def get_chat_response(prompt):
@@ -86,24 +232,27 @@ def get_chat_response(prompt):
 # Page configuration
 st.set_page_config(
     page_title="Cube.js Analytics Chat",
-    page_icon="📊",
+    page_icon="chart_with_upwards_trend",
     layout="wide"
 )
 
-st.title("📊 Cube.js Analytics Chat")
+st.title("Cube.js Analytics Chat")
 st.markdown("Ask questions about your data and get insights from Cube.js!")
 
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = [{
         "role": "assistant",
-        "content": "Hello! 👋 I'm your Cube.js analytics assistant. Ask me anything about your course performance data!"
+        "content": "Hello! I'm your Cube.js analytics assistant. Ask me anything about your data! You can also ask me to create charts and visualizations."
     }]
 
 # Display chat messages from history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_response(message["content"])
+        else:
+            st.markdown(message["content"])
 
 # Chat input
 if prompt := st.chat_input("Ask a question about your data..."):
@@ -117,13 +266,17 @@ if prompt := st.chat_input("Ask a question about your data..."):
         response = st.write_stream(get_chat_response(prompt))
     st.session_state.messages.append({"role": "assistant", "content": response})
 
-# Sidebar with information
+    # Re-render the last message with proper chart parsing
+    st.rerun()
+
+# Sidebar with information and context upload
 with st.sidebar:
     st.header("About")
     st.markdown("""
     This chat interface allows you to:
     - Query Cube.js data using natural language
     - Get insights about course performance
+    - Generate charts and visualizations (pie, bar, line, area, scatter)
     - Retrieve analytics using RAG (Retrieval-Augmented Generation)
 
     **Data Sources:**
@@ -131,6 +284,64 @@ with st.sidebar:
     - Cube.js Pre-aggregations
     - Vector-based semantic search
     """)
+
+    st.divider()
+
+    # Context upload section
+    st.header("Context Files")
+    st.markdown("Upload files or text to keep in context for all conversations.")
+
+    # Display current contexts
+    if st.session_state.contexts:
+        st.markdown("**Uploaded Contexts:**")
+        for ctx in st.session_state.contexts:
+            st.markdown(f"- {ctx}")
+
+    # File upload
+    context_file = st.file_uploader(
+        "Upload context file",
+        type=['txt', 'md', 'json', 'csv', 'yaml', 'yml'],
+        help="Upload a file to add to the conversation context"
+    )
+
+    if context_file is not None:
+        if st.button("Add File to Context"):
+            try:
+                content = context_file.read().decode("utf-8")
+                result = upload_context_to_backend(content, context_file.name)
+                if result.get("status") == "success":
+                    st.session_state.contexts.append(context_file.name)
+                    st.success(f"Added '{context_file.name}' to context")
+                    st.rerun()
+                else:
+                    st.error(result.get("error", "Failed to add context"))
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+    # Text input for context
+    with st.expander("Add text context"):
+        context_name = st.text_input("Context name", placeholder="e.g., business_rules")
+        context_text = st.text_area("Context content", placeholder="Enter any text to keep in context...")
+        if st.button("Add Text to Context"):
+            if context_text and context_name:
+                result = upload_context_to_backend(context_text, context_name)
+                if result.get("status") == "success":
+                    st.session_state.contexts.append(context_name)
+                    st.success(f"Added '{context_name}' to context")
+                    st.rerun()
+                else:
+                    st.error(result.get("error", "Failed to add context"))
+            else:
+                st.warning("Please provide both name and content")
+
+    if st.session_state.contexts:
+        if st.button("Clear All Contexts"):
+            clear_contexts_from_backend()
+            st.session_state.contexts = []
+            st.success("Contexts cleared")
+            st.rerun()
+
+    st.divider()
 
     if st.button("Clear Chat History"):
         st.session_state.messages = [{
