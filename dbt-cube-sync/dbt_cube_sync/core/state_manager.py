@@ -4,6 +4,7 @@ State management for incremental sync functionality.
 Tracks model checksums to enable incremental sync - only regenerate
 Cube.js files for models that have actually changed.
 """
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -11,6 +12,34 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from .models import ModelState, SyncState
+
+
+def compute_model_checksum(node_data: dict) -> str:
+    """
+    Compute a checksum that includes both the dbt model checksum
+    and the metrics/meta configuration.
+
+    This ensures that changes to metrics (which don't change the SQL)
+    are still detected as modifications.
+
+    Args:
+        node_data: The node data from the dbt manifest
+
+    Returns:
+        A combined SHA256 checksum string
+    """
+    # Get the base dbt checksum
+    base_checksum = node_data.get("checksum", {}).get("checksum", "")
+
+    # Get the meta configuration (where metrics are defined)
+    meta = node_data.get("config", {}).get("meta", {})
+
+    # Serialize meta to a stable JSON string (sorted keys for consistency)
+    meta_json = json.dumps(meta, sort_keys=True, default=str)
+
+    # Combine and hash
+    combined = f"{base_checksum}:{meta_json}"
+    return hashlib.sha256(combined.encode()).hexdigest()
 
 
 class StateManager:
@@ -86,11 +115,11 @@ class StateManager:
         removed = previous_node_ids - current_node_ids
 
         # Find modified models (in both, but checksum changed)
+        # Note: We compute a combined checksum that includes metrics/meta config,
+        # not just the dbt SQL checksum. This ensures metric changes are detected.
         modified = set()
         for node_id in current_node_ids & previous_node_ids:
-            current_checksum = manifest_nodes[node_id].get("checksum", {}).get(
-                "checksum", ""
-            )
+            current_checksum = compute_model_checksum(manifest_nodes[node_id])
             previous_checksum = previous_state.models[node_id].checksum
             if current_checksum != previous_checksum:
                 modified.add(node_id)
@@ -121,7 +150,8 @@ class StateManager:
             if node_id not in generated_files:
                 continue
 
-            checksum = node_data.get("checksum", {}).get("checksum", "")
+            # Use combined checksum that includes metrics/meta config
+            checksum = compute_model_checksum(node_data)
             has_metrics = bool(
                 node_data.get("config", {}).get("meta", {}).get("metrics")
             )
@@ -174,7 +204,8 @@ class StateManager:
         # Update/add newly generated models
         for node_id, output_file in generated_files.items():
             node_data = manifest_nodes.get(node_id, {})
-            checksum = node_data.get("checksum", {}).get("checksum", "")
+            # Use combined checksum that includes metrics/meta config
+            checksum = compute_model_checksum(node_data)
             has_metrics = bool(
                 node_data.get("config", {}).get("meta", {}).get("metrics")
             )
