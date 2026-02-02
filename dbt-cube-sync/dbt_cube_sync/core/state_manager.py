@@ -114,14 +114,24 @@ class StateManager:
         # Find removed models (in previous but not in current)
         removed = previous_node_ids - current_node_ids
 
-        # Find modified models (in both, but checksum changed)
+        # Find modified models (in both, but checksum changed or output file missing)
         # Note: We compute a combined checksum that includes metrics/meta config,
         # not just the dbt SQL checksum. This ensures metric changes are detected.
         modified = set()
         for node_id in current_node_ids & previous_node_ids:
             current_checksum = compute_model_checksum(manifest_nodes[node_id])
             previous_checksum = previous_state.models[node_id].checksum
+
+            # Check if checksum changed
             if current_checksum != previous_checksum:
+                modified.add(node_id)
+                continue
+
+            # Even if checksum matches, check if output file exists
+            # If file was deleted manually, we need to regenerate it
+            output_file = previous_state.models[node_id].output_file
+            if output_file and not os.path.exists(output_file):
+                print(f"  Output file missing for {node_id}, will regenerate")
                 modified.add(node_id)
 
         return added, modified, removed
