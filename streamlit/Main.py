@@ -8,6 +8,13 @@ import re
 import plotly.graph_objects as go
 import plotly.express as px
 
+# Page configuration MUST be first Streamlit command
+st.set_page_config(
+    page_title="Cube.js Analytics Chat",
+    page_icon="chart_with_upwards_trend",
+    layout="wide"
+)
+
 
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -228,13 +235,6 @@ def get_chat_response(prompt):
     rd = dateutil.relativedelta.relativedelta(datetime.datetime.now(), start_time)
     yield f"\n\n_Response time: {rd.minutes} minutes and {rd.seconds} seconds_"
 
-
-# Page configuration
-st.set_page_config(
-    page_title="Cube.js Analytics Chat",
-    page_icon="chart_with_upwards_trend",
-    layout="wide"
-)
 
 st.title("Cube.js Analytics Chat")
 st.markdown("Ask questions about your data and get insights from Cube.js!")
