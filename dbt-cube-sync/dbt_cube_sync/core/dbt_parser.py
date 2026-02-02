@@ -291,20 +291,49 @@ class DbtParser:
         
         return pre_aggregations
     
+    # All valid Cube.js measure/metric types
+    VALID_METRIC_TYPES = {
+        'count', 'number', 'string', 'boolean', 'time',
+        'sum', 'avg', 'min', 'max',
+        'countDistinct', 'runningTotal', 'countDistinctApprox'  # For custom SQL expressions
+    }
+
     @staticmethod
     def map_dbt_type_to_cube_type(dbt_type: str) -> str:
-        """Map dbt metric types to Cube.js measure types"""
+        """Map dbt metric types to Cube.js measure types.
+
+        Supported types:
+        - count, number, string, boolean, time
+        - sum, avg, min, max
+        - countDistinct, runningTotal, countDistinctApprox
+        - sql (for custom SQL expressions)
+        """
         type_mapping = {
+            # Standard aggregations
             'sum': 'sum',
             'average': 'avg',
             'avg': 'avg',
             'count': 'count',
-            'count_distinct': 'countDistinct',
             'min': 'min',
             'max': 'max',
+            # Distinct counts
+            'count_distinct': 'countDistinct',
+            'countdistinct': 'countDistinct',
+            'countDistinct': 'countDistinct',
+            'countdistinctapprox': 'countDistinctApprox',
+            'countDistinctApprox': 'countDistinctApprox',
+            # Running totals
+            'runningtotal': 'runningTotal',
+            'runningTotal': 'runningTotal',
+            # Primitive types (for calculated/derived measures)
             'number': 'number',
+            'string': 'string',
+            'boolean': 'boolean',
+            'time': 'time',
+            # Custom SQL
+            'sql': 'sql',
         }
-        return type_mapping.get(dbt_type.lower(), 'sum')
+        return type_mapping.get(dbt_type, type_mapping.get(dbt_type.lower(), 'number'))
     
     @staticmethod
     def map_data_type_to_cube_type(data_type: str) -> str:

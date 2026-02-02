@@ -211,9 +211,9 @@ class SupersetConnector(BaseConnector):
         
         # Parse dimensions
         dimensions = self._parse_dimensions(content)
-        
-        # Parse measures
-        measures = self._parse_measures(content)
+
+        # Parse measures (pass cube_name for MEASURE() syntax)
+        measures = self._parse_measures(content, cube_name)
         
         return {
             'cube_name': cube_name,
@@ -278,48 +278,53 @@ class SupersetConnector(BaseConnector):
         
         return dimensions
     
-    def _parse_measures(self, content: str) -> List[Dict[str, Any]]:
-        """Extract measures from Cube.js file"""
+    def _parse_measures(self, content: str, cube_name: str) -> List[Dict[str, Any]]:
+        """Extract measures from Cube.js file.
+
+        Args:
+            content: The Cube.js file content
+            cube_name: The name of the cube (used for MEASURE() syntax)
+
+        Returns:
+            List of measure definitions with MEASURE(CubeName.metric_name) expressions
+        """
         measures = []
-        
+
         # Find measures block
         measures_match = re.search(
             r'measures:\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*?)\}',
             content,
             re.DOTALL
         )
-        
+
         if not measures_match:
             print("  ⚠️  No measures block found")
             return measures
-        
+
         measures_block = measures_match.group(1)
-        
+
         # Parse individual measures
         measure_pattern = r'(\w+):\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}(?=\s*,|\s*$)'
         matches = list(re.finditer(measure_pattern, measures_block))
-        
+
         print(f"  Found {len(matches)} measures in Cube.js file")
-        
+
         for match in matches:
             measure_name = match.group(1)
             measure_content = match.group(2)
-            
+
             # Extract type
             type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', measure_content)
             measure_type = type_match.group(1) if type_match else 'sum'
-            
-            # Extract sql
-            sql_match = re.search(r'sql:\s*`([^`]+)`', measure_content)
-            sql_expression = sql_match.group(1).strip() if sql_match else measure_name
-            
+
             # Extract title
             title_match = re.search(r'title:\s*[\'"]([^\'\"]+)[\'"]', measure_content)
             metric_name = title_match.group(1) if title_match else measure_name.replace('_', ' ').title()
-            
-            # Map Cube.js aggregation type to SQL aggregate
-            expression = self._create_metric_expression(measure_type, sql_expression)
-            
+
+            # Use MEASURE(CubeName.metric_name) syntax for Superset
+            # This leverages Cube.js SQL API to handle aggregation properly
+            expression = f"MEASURE({cube_name}.{measure_name})"
+
             measures.append({
                 'metric_name': metric_name,
                 'expression': expression,
@@ -327,9 +332,9 @@ class SupersetConnector(BaseConnector):
                 'verbose_name': metric_name,
                 'metric_type': measure_type
             })
-            
-            print(f"    - {metric_name}")
-        
+
+            print(f"    - {metric_name} -> {expression}")
+
         return measures
     
     def _map_cube_type_to_superset(self, cube_type: str) -> str:
