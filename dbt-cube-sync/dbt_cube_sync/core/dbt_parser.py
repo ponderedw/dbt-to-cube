@@ -85,9 +85,16 @@ class DbtParser:
             if self.model_filter and model_name not in self.model_filter:
                 continue
 
+            # Check if model has metrics BEFORE parsing (avoid unnecessary DB lookups)
+            config = node_data.get('config', {})
+            meta = config.get('meta', {})
+            metrics = meta.get('metrics', {})
+            if not metrics:
+                continue
+
             model = self._parse_model(node_id, node_data)
-            # Include models that have columns AND metrics (measures are required for useful Cube.js schemas)
-            if model and model.columns and model.metrics:
+            # Include models that have columns (measures already confirmed above)
+            if model and model.columns:
                 models.append(model)
 
         # Close database inspector if it was used
