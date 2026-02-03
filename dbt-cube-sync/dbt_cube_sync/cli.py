@@ -264,6 +264,161 @@ def version():
 @main.command()
 @click.option('--manifest', '-m',
               required=True,
+              help='Path to local dbt manifest.json file')
+@click.option('--state', '-s',
+              required=True,
+              help='Path to production state file (.dbt-cube-sync-state.json)')
+@click.option('--output', '-o',
+              required=False,
+              default=None,
+              help='Output path for JSON results file')
+@click.option('--fail-on-changes',
+              is_flag=True,
+              default=False,
+              help='Exit with code 2 if changes are detected (useful for CI)')
+def compare_state(
+    manifest: str,
+    state: str,
+    output: Optional[str],
+    fail_on_changes: bool
+):
+    """
+    Compare local manifest against production state to detect metric changes.
+
+    This command compares checksums of dbt models with metrics between a local
+    manifest.json and a production state file to detect what has changed.
+
+    Useful for CI pipelines to determine if Cube.js schemas need regeneration.
+
+    Exit codes:
+      0 - No changes detected
+      1 - Error occurred
+      2 - Changes detected (only with --fail-on-changes)
+
+    Examples:
+
+      # Basic comparison
+      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json
+
+      # Output results to JSON file
+      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json -o changes.json
+
+      # For CI: exit with code 2 if changes detected
+      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json --fail-on-changes
+    """
+    import json
+
+    try:
+        click.echo("=" * 60)
+        click.echo("COMPARE STATE: Detecting Metric Changes")
+        click.echo("=" * 60)
+
+        # Load manifest
+        click.echo(f"\nLoading manifest from {manifest}...")
+        parser = DbtParser(manifest_path=manifest)
+        manifest_nodes = parser.get_manifest_nodes_with_metrics()
+        click.echo(f"  Found {len(manifest_nodes)} models with metrics in manifest")
+
+        # Load production state
+        click.echo(f"\nLoading production state from {state}...")
+        state_manager = StateManager(state)
+
+        try:
+            with open(state, 'r') as f:
+                state_data = json.load(f)
+
+            # Convert to SyncState format if needed
+            from .core.models import SyncState
+            if state_data:
+                prod_state = SyncState.model_validate(state_data)
+                click.echo(f"  Found {len(prod_state.models)} models in production state")
+            else:
+                prod_state = None
+                click.echo("  Empty state file - treating all models as new")
+        except (FileNotFoundError, json.JSONDecodeError):
+            prod_state = None
+            click.echo("  No valid state found - treating all models as new")
+
+        # Compare checksums
+        click.echo("\nComparing checksums...")
+        if prod_state:
+            added, modified, removed = state_manager.get_changed_models(
+                manifest_nodes, prod_state
+            )
+        else:
+            added = set(manifest_nodes.keys())
+            modified = set()
+            removed = set()
+
+        has_changes = bool(added or modified or removed)
+
+        # Display results
+        click.echo("\n" + "=" * 60)
+        click.echo("CHANGE DETECTION RESULTS")
+        click.echo("=" * 60)
+
+        if added:
+            click.echo(f"\n✅ Added models ({len(added)}):")
+            for model_id in sorted(added):
+                model_name = model_id.split('.')[-1]
+                click.echo(f"    + {model_name}")
+
+        if modified:
+            click.echo(f"\n🔄 Modified models ({len(modified)}):")
+            for model_id in sorted(modified):
+                model_name = model_id.split('.')[-1]
+                click.echo(f"    ~ {model_name}")
+
+        if removed:
+            click.echo(f"\n❌ Removed models ({len(removed)}):")
+            for model_id in sorted(removed):
+                model_name = model_id.split('.')[-1]
+                click.echo(f"    - {model_name}")
+
+        if not has_changes:
+            click.echo("\n✨ No changes detected in models with metrics")
+
+        click.echo("\n" + "=" * 60)
+
+        # Summary
+        click.echo(f"\nSummary:")
+        click.echo(f"  Total models in manifest: {len(manifest_nodes)}")
+        click.echo(f"  Total models in state:    {len(prod_state.models) if prod_state else 0}")
+        click.echo(f"  Added:    {len(added)}")
+        click.echo(f"  Modified: {len(modified)}")
+        click.echo(f"  Removed:  {len(removed)}")
+        click.echo(f"  Changes:  {'Yes' if has_changes else 'No'}")
+
+        # Write output JSON if requested
+        if output:
+            result = {
+                'has_changes': has_changes,
+                'added': list(added),
+                'modified': list(modified),
+                'removed': list(removed),
+                'added_count': len(added),
+                'modified_count': len(modified),
+                'removed_count': len(removed),
+                'manifest_model_count': len(manifest_nodes),
+                'state_model_count': len(prod_state.models) if prod_state else 0,
+            }
+            with open(output, 'w') as f:
+                json.dump(result, f, indent=2)
+            click.echo(f"\nResults written to {output}")
+
+        # Exit code based on changes
+        if has_changes and fail_on_changes:
+            click.echo("\nExiting with code 2 (changes detected)")
+            sys.exit(2)
+
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.option('--manifest', '-m',
+              required=True,
               help='Path to dbt manifest.json file')
 @click.option('--catalog', '-c',
               required=False,
