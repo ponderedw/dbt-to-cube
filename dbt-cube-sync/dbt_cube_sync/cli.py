@@ -339,11 +339,11 @@ def compare_state(
             prod_state = None
             click.echo("  No valid state found - treating all models as new")
 
-        # Compare checksums
+        # Compare checksums (skip output file checks since we're in CI without local files)
         click.echo("\nComparing checksums...")
         if prod_state:
             added, modified, removed = state_manager.get_changed_models(
-                manifest_nodes, prod_state
+                manifest_nodes, prod_state, check_output_files=False
             )
         else:
             added = set(manifest_nodes.keys())

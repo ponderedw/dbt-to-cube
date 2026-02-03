@@ -89,6 +89,7 @@ class StateManager:
         self,
         manifest_nodes: Dict[str, dict],
         previous_state: Optional[SyncState] = None,
+        check_output_files: bool = True,
     ) -> Tuple[Set[str], Set[str], Set[str]]:
         """
         Compare manifest nodes against stored state to identify changes.
@@ -96,6 +97,8 @@ class StateManager:
         Args:
             manifest_nodes: Dict of node_id -> node data from manifest
             previous_state: Previous sync state (if None, all models are "added")
+            check_output_files: If True, also mark models as modified if output file is missing.
+                              Set to False for CI comparison where files don't exist locally.
 
         Returns:
             Tuple of (added_node_ids, modified_node_ids, removed_node_ids)
@@ -129,10 +132,12 @@ class StateManager:
 
             # Even if checksum matches, check if output file exists
             # If file was deleted manually, we need to regenerate it
-            output_file = previous_state.models[node_id].output_file
-            if output_file and not os.path.exists(output_file):
-                print(f"  Output file missing for {node_id}, will regenerate")
-                modified.add(node_id)
+            # Skip this check if check_output_files is False (e.g., CI comparison)
+            if check_output_files:
+                output_file = previous_state.models[node_id].output_file
+                if output_file and not os.path.exists(output_file):
+                    print(f"  Output file missing for {node_id}, will regenerate")
+                    modified.add(node_id)
 
         return added, modified, removed
 
