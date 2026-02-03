@@ -76,6 +76,10 @@ def main():
               is_flag=True,
               default=False,
               help='Disable state tracking (legacy behavior)')
+@click.option('--ci-mode',
+              is_flag=True,
+              default=False,
+              help='CI mode: skip output file existence checks (for environments where output files do not exist locally)')
 def dbt_to_cube(
     manifest: str,
     catalog: Optional[str],
@@ -85,7 +89,8 @@ def dbt_to_cube(
     template_dir: str,
     state_path: str,
     force_full_sync: bool,
-    no_state: bool
+    no_state: bool,
+    ci_mode: bool
 ):
     """Generate Cube.js schemas from dbt models"""
     try:
@@ -129,7 +134,7 @@ def dbt_to_cube(
         # Determine which models need regeneration
         if use_incremental and previous_state:
             added, modified, removed = state_manager.get_changed_models(
-                manifest_nodes, previous_state
+                manifest_nodes, previous_state, check_output_files=not ci_mode
             )
 
             if not added and not modified and not removed:
