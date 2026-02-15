@@ -153,7 +153,7 @@ class DbtParser:
         
         return DbtModel(
             name=model_name,
-            model_alias=model_alias,
+            alias=model_alias,
             database=model_database,
             schema_name=model_schema,
             node_id=node_id,
