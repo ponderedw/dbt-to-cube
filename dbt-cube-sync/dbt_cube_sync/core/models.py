@@ -44,6 +44,7 @@ class DbtPreAggregation(BaseModel):
 class DbtModel(BaseModel):
     """Represents a parsed dbt model"""
     name: str
+    alias: str
     database: str
     schema_name: str  # Renamed to avoid shadowing BaseModel.schema
     node_id: str
