@@ -198,7 +198,7 @@ class DbtParser:
         db_columns = {}
         if need_db_lookup and self.db_inspector:
             schema = node_data.get('schema', '')
-            table_name = node_data.get('name', '')
+            table_name = node_data.get('alias', node_data.get('name', ''))
             if schema and table_name:
                 db_columns = self.db_inspector.get_table_columns(schema, table_name)
 
