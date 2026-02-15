@@ -138,6 +138,7 @@ class DbtParser:
     def _parse_model(self, node_id: str, node_data: dict) -> DbtModel:
         """Parse a single model from the manifest"""
         model_name = node_data.get('name', '')
+        model_alias = node_data.get('alias', model_name)
         model_schema = node_data.get('schema', '')
         model_database = node_data.get('database', '')
         
@@ -152,6 +153,7 @@ class DbtParser:
         
         return DbtModel(
             name=model_name,
+            model_alias=model_alias,
             database=model_database,
             schema_name=model_schema,
             node_id=node_id,

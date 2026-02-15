@@ -63,7 +63,7 @@ class CubeGenerator:
         cube_name = self._to_pascal_case(model.name)
         
         # Generate SQL reference
-        sql = f"SELECT * FROM {model.schema_name}.{model.name}"
+        sql = f"SELECT * FROM {model.schema_name}.{model.alias}"
         
         # Convert columns to dimensions
         dimensions = []
