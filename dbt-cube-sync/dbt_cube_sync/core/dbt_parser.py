@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .models import DbtModel, DbtColumn, DbtMetric, DbtPreAggregation, DbtRefreshKey
 from .db_inspector import DatabaseInspector
+from .macro_resolver import MacroResolver
 
 
 class DbtParser:
@@ -18,7 +19,7 @@ class DbtParser:
         manifest_path: str,
         catalog_path: Optional[str] = None,
         sqlalchemy_uri: Optional[str] = None,
-        model_filter: Optional[List[str]] = None
+        model_filter: Optional[List[str]] = None,
     ):
         """
         Initialize the parser
@@ -36,6 +37,7 @@ class DbtParser:
         self.manifest = self._load_manifest()
         self.catalog = self._load_catalog() if catalog_path else None
         self.db_inspector = DatabaseInspector(sqlalchemy_uri) if sqlalchemy_uri else None
+        self.macro_resolver = MacroResolver.from_manifest(self.manifest)
     
     def _load_manifest(self) -> dict:
         """Load the dbt manifest.json file"""
@@ -256,10 +258,13 @@ class DbtParser:
         
         for metric_name, metric_config in metrics_data.items():
             if isinstance(metric_config, dict):
+                raw_sql = metric_config.get('sql')
+                resolved_sql = self.macro_resolver.resolve(raw_sql) if raw_sql else raw_sql
+
                 metrics[metric_name] = DbtMetric(
                     name=metric_name,
                     type=metric_config.get('type', 'sum'),
-                    sql=metric_config.get('sql'),
+                    sql=resolved_sql,
                     title=metric_config.get('title', metric_name.replace('_', ' ').title()),
                     description=metric_config.get('description', metric_name.replace('_', ' ').title())
                 )
