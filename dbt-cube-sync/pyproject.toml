@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dbt-cube-sync"
-version = "0.1.0a27"
+version = "0.1.0a28"
 description = "Synchronization tool for dbt models to Cube.js schemas and BI tools"
 authors = ["Ponder"]
 readme = "README.md"

@@ -573,6 +573,22 @@ def sync_all(
             node_ids_to_process = list(manifest_nodes.keys())
             click.echo(f"  Full sync: processing all {len(node_ids_to_process)} models")
 
+            # Remove .js files that no longer exist in the new manifest
+            output_path = Path(output)
+            if output_path.exists():
+                expected_stems = {
+                    CubeGenerator._to_pascal_case(node_data.get("name", ""))
+                    for node_data in manifest_nodes.values()
+                }
+                stale_files = [
+                    f for f in output_path.glob("*.js")
+                    if f.stem not in expected_stems
+                ]
+                for stale_file in stale_files:
+                    stale_file.unlink()
+                if stale_files:
+                    click.echo(f"  Removed {len(stale_files)} stale .js files")
+
         # Generate Cube.js files for changed models
         generated_files = {}
         cube_sync_error = None
