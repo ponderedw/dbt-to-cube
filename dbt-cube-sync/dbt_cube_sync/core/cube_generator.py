@@ -70,14 +70,7 @@ class CubeGenerator:
         for col_name, col_data in model.columns.items():
             raw_type = col_data.data_type or ''
             cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
-
-            # Cast float/real types to DOUBLE PRECISION so Cube Store represents
-            # them as Arrow FLOAT64 instead of Decimal, avoiding the Arrow
-            # "precision > 38" error that occurs with REAL columns.
-            if any(t in raw_type.lower() for t in ['real', 'float']):
-                col_sql = f"CAST({col_name} AS DOUBLE PRECISION)"
-            else:
-                col_sql = col_name
+            col_sql = self._safe_sql_expr(col_name, raw_type)
 
             dimension = CubeDimension(
                 name=col_name,
@@ -283,6 +276,31 @@ class CubeGenerator:
         
         return content
     
+    @staticmethod
+    def _safe_sql_expr(col_name: str, raw_type: str) -> str:
+        """Return a SQL expression that is safe for Cube Store / Arrow Decimal128.
+
+        Arrow Decimal128 has a maximum precision of 38. Two cases trigger the
+        "precision > 38" error:
+          - REAL/FLOAT columns: Cube infers decimal precision from IEEE-754 range.
+            Fix: cast to DOUBLE PRECISION (Arrow FLOAT64, no precision cap).
+          - NUMERIC(p, s) with p > 38: e.g. numeric(39, 10) from catalog.
+            Fix: cap precision at 38 while preserving scale.
+        """
+        lower = raw_type.lower()
+
+        if any(t in lower for t in ['real', 'float']):
+            return f"CAST({col_name} AS DECIMAL(36, 10))"
+
+        m = re.match(r'(?:numeric|decimal)\s*\(\s*(\d+)\s*(?:,\s*(\d+))?\s*\)', lower)
+        if m:
+            precision = int(m.group(1))
+            scale = int(m.group(2)) if m.group(2) else 0
+            if precision > 38:
+                return f"CAST({col_name} AS DECIMAL(38, {scale}))"
+
+        return col_name
+
     @staticmethod
     def _to_pascal_case(text: str) -> str:
         """Convert text to PascalCase"""
