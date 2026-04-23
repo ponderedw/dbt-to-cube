@@ -68,11 +68,20 @@ class CubeGenerator:
         # Convert columns to dimensions
         dimensions = []
         for col_name, col_data in model.columns.items():
-            cube_type = DbtParser.map_data_type_to_cube_type(col_data.data_type or '')
-            
+            raw_type = col_data.data_type or ''
+            cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
+
+            # Cast float/real types to DOUBLE PRECISION so Cube Store represents
+            # them as Arrow FLOAT64 instead of Decimal, avoiding the Arrow
+            # "precision > 38" error that occurs with REAL columns.
+            if any(t in raw_type.lower() for t in ['real', 'float']):
+                col_sql = f"CAST({col_name} AS DOUBLE PRECISION)"
+            else:
+                col_sql = col_name
+
             dimension = CubeDimension(
                 name=col_name,
-                sql=col_name,
+                sql=col_sql,
                 type=cube_type,
                 title=col_data.description or col_name.replace('_', ' ').title(),
                 description=col_data.description or col_name.replace('_', ' ').title()
