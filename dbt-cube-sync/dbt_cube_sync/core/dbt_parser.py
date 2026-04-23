@@ -357,7 +357,7 @@ class DbtParser:
         
         data_type = data_type.lower()
         
-        if any(t in data_type for t in ['int', 'bigint', 'decimal', 'numeric', 'float', 'double']):
+        if any(t in data_type for t in ['int', 'bigint', 'decimal', 'numeric', 'float', 'double', 'real']):
             return 'number'
         elif any(t in data_type for t in ['timestamp', 'datetime', 'date']):
             return 'time'
