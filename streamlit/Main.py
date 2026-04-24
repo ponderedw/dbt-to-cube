@@ -66,14 +66,21 @@ if not check_password():
 # Get FastAPI URL from environment or use default
 FASTAPI_URL = os.environ.get('FASTAPI_URL', 'http://fastapi:8080')
 
-if "http_session" not in st.session_state:
-    st.session_state.http_session = requests.Session()
-    # Initialize session with FastAPI backend
-    response = st.session_state.http_session.post(
-        f"{FASTAPI_URL}/chat/new",
-        headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')}
-    )
-    response.raise_for_status()
+if not st.session_state.get("backend_ready"):
+    _session = requests.Session()
+    try:
+        _resp = _session.post(
+            f"{FASTAPI_URL}/chat/new",
+            headers={"x-access-token": os.environ.get('FAST_API_ACCESS_SECRET_TOKEN')},
+            timeout=10
+        )
+        _resp.raise_for_status()
+        st.session_state.http_session = _session
+        st.session_state.backend_ready = True
+    except Exception as e:
+        st.warning(f"API backend not ready yet ({FASTAPI_URL}). Retrying in 5 seconds…")
+        st.markdown('<meta http-equiv="refresh" content="5">', unsafe_allow_html=True)
+        st.stop()
 
 if "contexts" not in st.session_state:
     st.session_state.contexts = []

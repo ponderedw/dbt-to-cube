@@ -311,6 +311,74 @@ Add monitoring with:
 - ELK stack for logging
 - Health check endpoints
 
+## 💡 Why dbt?
+
+dbt is the industry standard for analytics engineering because it brings software-engineering discipline to SQL transformations. This project is built on top of dbt's metadata ecosystem — understanding dbt's strengths explains why the whole pipeline works.
+
+### SQL as Code, in Version Control
+Every transformation is a `.sql` file with an explicit name. No hidden stored procedures, no ad-hoc scripts — all logic is readable, diffable, and reviewable in Git.
+
+### Automatic Dependency Graph (DAG)
+`{{ ref('model_name') }}` and `{{ source('source', 'table') }}` declare dependencies explicitly. dbt builds a full DAG and always runs models in the correct order, parallelizing independent branches automatically. Lineage is visible for free via `dbt docs serve`.
+
+```sql
+-- dbt resolves the schema at run-time; no hardcoded database names
+SELECT * FROM {{ ref('stg_students') }}
+```
+
+### Layered Architecture
+The staging → intermediate → marts pattern keeps raw-data cleaning separate from business logic and from end-user-facing tables. BI tools always query stable mart-layer models — never raw sources.
+
+| Layer | Purpose |
+|-------|---------|
+| Staging | Rename, cast, light cleaning |
+| Intermediate | Complex joins, business logic |
+| Marts | Wide, polished tables for analytics |
+
+### Column Descriptions Are First-Class
+Descriptions in dbt YAML are not just documentation — this pipeline reads them directly and writes them to Cube.js `title`/`description` fields and Superset column descriptions automatically.
+
+```yaml
+columns:
+  - name: course_id
+    description: "Unique identifier for the course"
+    tests:
+      - unique
+      - not_null
+```
+
+### Built-in Data Quality Tests
+`dbt test` runs schema tests (uniqueness, not-null, referential integrity, accepted values) defined alongside the same YAML that documents the columns. Tests and docs stay in sync.
+
+### Metadata-Rich Artifacts Drive Automation
+`dbt docs generate` produces `manifest.json` and `catalog.json` — structured JSON capturing every model, column, data type, test, and dependency. dbt-cube-sync reads these files to generate Cube.js schemas and configure Superset with zero manual steps.
+
+---
+
+## 🚀 Why This Approach?
+
+The dbt → Cube.js → Superset pipeline solves the most common analytics engineering pain point: metric definitions diverging between the transformation layer, the semantic layer, and the BI tool.
+
+### One Definition, Everywhere
+`average_gpa` is calculated once — in dbt YAML — and flows automatically to Cube.js and Superset. No risk of subtle divergence between dashboard metrics and warehouse logic.
+
+### Descriptions Travel With the Data
+Column and metric descriptions written in dbt YAML appear in Superset without any copy-paste. Updating a description in dbt and rerunning the pipeline updates Superset too.
+
+### Cube.js as a Consistent Semantic Layer
+All BI tools query through Cube.js rather than PostgreSQL directly:
+- Aggregation logic runs in one place (Cube.js measures)
+- Pre-aggregations cache heavy queries automatically
+- Adding a new BI tool requires zero changes to dbt or Cube.js schemas
+
+### Incremental Sync Keeps It Fast
+The state file (`.dbt-cube-sync-state.json`) tracks model checksums. Only models whose YAML or SQL changed since the last run are regenerated and re-synced — a full project rebuild is a one-time cost.
+
+### No Manual BI Configuration
+New mart models with a `metrics` block in their dbt YAML go from definition → Cube.js schema → Superset dataset fully automatically, with correct column types, descriptions, and calculated metrics.
+
+---
+
 ## 🤝 Contributing
 
 1. Fork the repository

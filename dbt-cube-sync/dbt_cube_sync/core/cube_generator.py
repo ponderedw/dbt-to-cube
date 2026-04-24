@@ -175,7 +175,8 @@ class CubeGenerator:
             dim_content = f"""    {dim.name}: {{
       sql: `{dim.sql}`,
       type: `{dim.type}`,
-      title: `{dim.title}`
+      title: `{dim.title}`,
+      description: `{dim.description or dim.title}`
     }}"""
             dimensions_content.append(dim_content)
         
@@ -185,7 +186,8 @@ class CubeGenerator:
             measure_content = f"""    {measure.name}: {{
       type: `{measure.type}`,
       sql: `{measure.sql}`,
-      title: `{measure.title}`
+      title: `{measure.title}`,
+      description: `{measure.description or measure.title}`
     }}"""
             measures_content.append(measure_content)
         

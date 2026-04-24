@@ -10,7 +10,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dbt_user -d education_dw"]
@@ -86,8 +86,8 @@ services:
         condition: service_completed_successfully
       cube_api:
         condition: service_started
-      superset:
-        condition: service_started
+      superset-setup:
+        condition: service_completed_successfully
     entrypoint: []
     command: 
       - "/bin/sh"

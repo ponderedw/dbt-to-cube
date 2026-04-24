@@ -9,11 +9,11 @@ dbt build --target container --profiles-dir .
 
 if [ $? -eq 0 ]; then
     echo "dbt build completed successfully!"
-    
+
     # Generate documentation
     echo "Generating dbt documentation..."
     dbt docs generate --target container --profiles-dir .
-    
+
     # Serve documentation on port 80
     echo "Starting dbt docs server on port 80..."
     dbt docs serve --profiles-dir . --port 80

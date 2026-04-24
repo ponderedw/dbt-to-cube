@@ -260,6 +260,7 @@ class DbtParser:
             if isinstance(metric_config, dict):
                 raw_sql = metric_config.get('sql')
                 resolved_sql = self.macro_resolver.resolve(raw_sql) if raw_sql else raw_sql
+                resolved_sql = self._normalize_decimal(resolved_sql) if resolved_sql else resolved_sql
 
                 metrics[metric_name] = DbtMetric(
                     name=metric_name,
@@ -305,6 +306,18 @@ class DbtParser:
         
         return pre_aggregations
     
+    @staticmethod
+    def _normalize_decimal(sql: str) -> str:
+        """Replace bare DECIMAL/NUMERIC (no precision) with DECIMAL(36, 10).
+
+        CAST(x AS DECIMAL) without explicit precision causes the driver to infer
+        precision, and division results can exceed Arrow Decimal128's limit of 38,
+        raising "Decimal precision is higher than requested: expected 38, got 39".
+        """
+        import re
+        # Match DECIMAL or NUMERIC not already followed by '('
+        return re.sub(r'\b(DECIMAL|NUMERIC)\b(?!\s*\()', r'DECIMAL(36, 10)', sql, flags=re.IGNORECASE)
+
     # All valid Cube.js measure/metric types
     VALID_METRIC_TYPES = {
         'count', 'number', 'string', 'boolean', 'time',
