@@ -3,7 +3,7 @@
 import os
 import json
 import requests
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from collections import defaultdict
 
@@ -567,7 +567,7 @@ Available Cubes (camelCase names):
             self.vector_store = Milvus(
                 embedding_function=self.embeddings,
                 collection_name=self.collection_name,
-                connection_args=self.connection_args
+                connection_args=self.connection_args,
             )
         return self.vector_store
 
@@ -614,6 +614,12 @@ Available Cubes (camelCase names):
         return formatted_results
 
 
+_schema_embeddings_instance: Optional[CubeSchemaEmbeddings] = None
+
+
 def get_schema_embeddings() -> CubeSchemaEmbeddings:
-    """Factory function to create CubeSchemaEmbeddings instance."""
-    return CubeSchemaEmbeddings()
+    """Return the shared CubeSchemaEmbeddings singleton."""
+    global _schema_embeddings_instance
+    if _schema_embeddings_instance is None:
+        _schema_embeddings_instance = CubeSchemaEmbeddings()
+    return _schema_embeddings_instance

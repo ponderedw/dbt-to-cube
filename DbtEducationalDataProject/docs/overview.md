@@ -72,6 +72,87 @@ models:
             title: "Total Course Enrollments"
 ```
 
+## How to Run This Package
+
+### Option 1 — Docker (Recommended)
+
+The fastest way to run the full stack (PostgreSQL, dbt, Cube.js, Superset, dbt docs):
+
+```bash
+git clone <repository-url>
+cd dbt-to-cube
+docker-compose up --build
+```
+
+Once all services are healthy, open:
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **dbt Docs** (this site) | http://localhost:8080 | — |
+| **Superset** | http://localhost:8088 | admin / admin |
+| **Cube.js API** | http://localhost:4000 | — |
+| **PostgreSQL** | localhost:5432 | dbt\_user / dbt\_password |
+
+Watch the sync pipeline run automatically:
+
+```bash
+docker-compose logs -f dbt-cube-sync
+```
+
+### Option 2 — Local Development
+
+Run dbt locally against an existing PostgreSQL instance.
+
+**1. Copy the profile:**
+```bash
+cp DbtEducationalDataProject/profiles.yml ~/.dbt/profiles.yml
+```
+
+**2. Install dbt packages:**
+```bash
+cd DbtEducationalDataProject
+dbt deps
+```
+
+**3. Seed reference data, then build all models:**
+```bash
+dbt seed
+dbt run
+```
+
+**4. Run data quality tests:**
+```bash
+dbt test
+```
+
+**5. Generate and serve this documentation:**
+```bash
+dbt docs generate
+dbt docs serve   # opens http://localhost:8080
+```
+
+### Running the Sync Pipeline Manually
+
+After dbt artifacts are generated, run `dbt-cube-sync` to push schemas to Cube.js and Superset:
+
+```bash
+# Convert dbt models to Cube.js schemas
+dbt-cube-sync dbt-to-cube \
+  --manifest ./target/manifest.json \
+  --catalog  ./target/catalog.json \
+  --output   ../cube_output
+
+# Sync Cube.js schemas to Superset
+dbt-cube-sync cube-to-bi superset \
+  --cube-files ../cube_output \
+  --url        http://localhost:8088 \
+  --username   admin \
+  --password   admin \
+  --cube-connection-name Cube
+```
+
+---
+
 ## Navigation
 
 You can use the **Project** and **Database** navigation tabs on the left side of the window to explore the models in your project.
@@ -87,5 +168,19 @@ Click the blue icon on the bottom-right corner to view the lineage graph of your
 On model pages you will see immediate parents and children of the model you are exploring. Use the **Expand** button at the top-right of the lineage pane to see the full upstream and downstream graph.
 
 Once expanded, use `--select` and `--exclude` model selection syntax to filter the graph.
+
+## Example Questions to Ask the AI Assistant
+
+Try these questions in the AI chat to explore what this data can answer:
+
+- What metrics and dimensions do we have?
+- Show all available course names.
+- What metrics are available for Linear Algebra?
+- How many enrollments do we have across all courses?
+- What is the student engagement score for the Data Structures and Algorithms course, broken down by semester?
+- Can you visualize the total number of course enrollments by difficulty level using a pie chart?
+- Return the number of students with excellent performance across academic years and visualize it using a line chart.
+- Can you create an area chart showing the number of students with excellent performance compared to the total number of enrolled students across semesters?
+- Can you visualize the relationship between course difficulty level and average course GPA using a scatter chart?
 
 {% enddocs %}
