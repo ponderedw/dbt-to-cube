@@ -72,12 +72,13 @@ class CubeGenerator:
             cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
             col_sql = self._safe_sql_expr(col_name, raw_type)
 
+            label = (col_data.meta or {}).get('label')
             dimension = CubeDimension(
                 name=col_name,
                 sql=col_sql,
                 type=cube_type,
-                title=col_data.description or col_name.replace('_', ' ').title(),
-                description=col_data.description or col_name.replace('_', ' ').title()
+                title=label or col_name.replace('_', ' ').title(),
+                description=col_data.description
             )
             dimensions.append(dimension)
         
@@ -100,7 +101,7 @@ class CubeGenerator:
                 type=cube_type,
                 sql=sql_expr,
                 title=metric_data.title or metric_name.replace('_', ' ').title(),
-                description=metric_data.description or metric_name.replace('_', ' ').title()
+                description=metric_data.description
             )
             measures.append(measure)
         
@@ -172,23 +173,27 @@ class CubeGenerator:
         # Generate dimensions
         dimensions_content = []
         for dim in cube_schema.dimensions:
-            dim_content = f"""    {dim.name}: {{
-      sql: `{dim.sql}`,
-      type: `{dim.type}`,
-      title: `{dim.title}`,
-      description: `{dim.description or dim.title}`
-    }}"""
+            dim_lines = [
+                f"      sql: `{dim.sql}`",
+                f"      type: `{dim.type}`",
+                f"      title: `{dim.title}`",
+            ]
+            if dim.description:
+                dim_lines.append(f"      description: `{dim.description}`")
+            dim_content = f"    {dim.name}: {{\n" + ",\n".join(dim_lines) + "\n    }"
             dimensions_content.append(dim_content)
         
         # Generate measures  
         measures_content = []
         for measure in cube_schema.measures:
-            measure_content = f"""    {measure.name}: {{
-      type: `{measure.type}`,
-      sql: `{measure.sql}`,
-      title: `{measure.title}`,
-      description: `{measure.description or measure.title}`
-    }}"""
+            measure_lines = [
+                f"      type: `{measure.type}`",
+                f"      sql: `{measure.sql}`",
+                f"      title: `{measure.title}`",
+            ]
+            if measure.description:
+                measure_lines.append(f"      description: `{measure.description}`")
+            measure_content = f"    {measure.name}: {{\n" + ",\n".join(measure_lines) + "\n    }"
             measures_content.append(measure_content)
         
         # Generate pre-aggregations

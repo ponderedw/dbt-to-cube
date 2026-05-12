@@ -266,8 +266,8 @@ class DbtParser:
                     name=metric_name,
                     type=metric_config.get('type', 'sum'),
                     sql=resolved_sql,
-                    title=metric_config.get('title', metric_name.replace('_', ' ').title()),
-                    description=metric_config.get('description', metric_name.replace('_', ' ').title())
+                    title=metric_config.get('label') or metric_config.get('title') or metric_name.replace('_', ' ').title(),
+                    description=metric_config.get('description')
                 )
         
         return metrics

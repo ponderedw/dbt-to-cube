@@ -51,6 +51,7 @@ services:
 
   cubestore:
     image: cubejs/cubestore:latest
+    platform: linux/amd64
     restart: always
     ports:
       - 3030:3030

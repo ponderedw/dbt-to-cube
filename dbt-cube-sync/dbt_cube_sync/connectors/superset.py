@@ -258,16 +258,11 @@ class SupersetConnector(BaseConnector):
             type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', dim_content)
             dim_type = type_match.group(1) if type_match else 'string'
             
-            # Extract description (prefer explicit description field, fall back to title)
-            desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
             title_match = re.search(r'title:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
-            description = (
-                desc_match.group(1) if desc_match
-                else title_match.group(1) if title_match
-                else dim_name.replace('_', ' ').title()
-            )
-            
-            verbose_name = dim_name.replace('_', ' ').title()
+            desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
+
+            verbose_name = title_match.group(1) if title_match else dim_name.replace('_', ' ').title()
+            description = desc_match.group(1) if desc_match else None
             
             dimensions.append({
                 'column_name': column_name,
@@ -327,7 +322,7 @@ class SupersetConnector(BaseConnector):
             metric_name = title_match.group(1) if title_match else measure_name.replace('_', ' ').title()
 
             desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', measure_content)
-            description = desc_match.group(1) if desc_match else metric_name
+            description = desc_match.group(1) if desc_match else None
 
             # Use MEASURE(CubeName.metric_name) syntax for Superset
             # This leverages Cube.js SQL API to handle aggregation properly
@@ -528,7 +523,7 @@ class SupersetConnector(BaseConnector):
                 
                 updated_col.update({
                     'verbose_name': matching_dim['verbose_name'],
-                    'description': matching_dim['description'],
+                    'description': matching_dim['description'] or '',
                     'is_dttm': matching_dim['is_dttm'],
                     'groupby': matching_dim['groupby'],
                     'filterable': matching_dim['filterable'],
@@ -567,7 +562,7 @@ class SupersetConnector(BaseConnector):
                 'metric_name': metric_name,
                 'verbose_name': measure['verbose_name'],
                 'expression': measure['expression'],
-                'description': measure['description'],
+                'description': measure['description'] or '',
                 'metric_type': 'simple',
                 'currency': None,
                 'd3format': None,
