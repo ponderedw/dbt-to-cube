@@ -42,26 +42,6 @@ models:
       description: "End date of the semester"
       meta:
         label: "Semester End"
-    - name: total_enrollments
-      description: "Total number of students enrolled in the course"
-      meta:
-        label: "Total Enrollments"
-    - name: avg_grade_points
-      description: "Average grade points achieved by students"
-      meta:
-        label: "Avg GPA"
-    - name: avg_attendance
-      description: "Average attendance percentage for the course"
-      meta:
-        label: "Avg Attendance %"
-    - name: excellent_performance
-      description: "Number of students with excellent performance (3.5+ GPA)"
-      meta:
-        label: "Excellent Performers"
-    - name: passing_grades
-      description: "Number of students with passing grades (2.0+ GPA)"
-      meta:
-        label: "Passing Students"
     - name: instructor_name
       description: "Name of the course instructor"
       meta:
@@ -70,14 +50,6 @@ models:
       description: "Academic position of the instructor"
       meta:
         label: "Instructor Position"
-    - name: pass_rate_percentage
-      description: "Percentage of students who passed the course"
-      meta:
-        label: "Pass Rate %"
-    - name: excellence_rate_percentage
-      description: "Percentage of students with excellent performance"
-      meta:
-        label: "Excellence Rate %"
     - name: performance_category
       description: "Overall performance category for the course"
       meta:
@@ -90,24 +62,24 @@ models:
           label: "Average Course GPA"
           description: "Mean grade point average across all enrolled students"
           format: "0.00"
-          sql: ${avg_grade_points}
+          sql: avg_grade_points
         course_pass_rate:
           type: average
           label: "Course Pass Rate"
           description: "Proportion of students achieving a passing grade (2.0+ GPA)"
           format: "0.0%"
-          sql: ${pass_rate_percentage} / 100
+          sql: pass_rate_percentage / 100
         total_course_enrollments:
           type: sum
           label: "Total Course Enrollments"
           description: "Total number of student enrollments across all course sections"
-          sql: ${total_enrollments}
+          sql: total_enrollments
         student_engagement_score:
           type: average
           label: "Student Engagement Score"
           description: "Composite score combining attendance (60%) and academic performance (40%)"
           format: "0.0"
-          sql: (${avg_attendance} * 0.6 + ${avg_grade_points} * 25)
+          sql: (avg_attendance * 0.6 + avg_grade_points * 25)
       pre_aggregations:
         # Real-time rollup with SQL refresh key
         course_performance_realtime:

@@ -1,10 +1,11 @@
 """
 Cube.js schema generator - creates Cube.js files from dbt models
 """
+import hashlib
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, List, Optional, Set, Tuple, Any
 from jinja2 import Environment, FileSystemLoader, Template
 
 from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey
@@ -30,31 +31,49 @@ class CubeGenerator:
         self.env = Environment(loader=FileSystemLoader(str(self.template_dir)))
     
     def generate_cube_files(
-        self, models: List[DbtModel], return_node_mapping: bool = False
-    ) -> Dict[str, str]:
+        self,
+        models: List[DbtModel],
+        stored_checksums: Optional[Dict[str, str]] = None,
+    ) -> Tuple[Dict[str, str], Dict[str, str], Set[str]]:
         """
-        Generate Cube.js files for all models
+        Generate Cube.js files for all models.
 
         Args:
             models: List of DbtModel instances
-            return_node_mapping: If True, returns dict mapping node_id -> file_path
-                                 If False (legacy), returns list of file paths
+            stored_checksums: Optional dict of node_id -> previously stored output_checksum.
+                              When provided, a file is only written if its content changed.
 
         Returns:
-            Dict mapping node_id -> file_path (for incremental sync support)
+            - file_paths: Dict[node_id -> file_path] for every model processed
+            - output_checksums: Dict[node_id -> checksum] of the generated content
+            - changed_node_ids: Set of node_ids whose content actually changed (file was written)
         """
-        generated_files = {}
+        file_paths: Dict[str, str] = {}
+        output_checksums: Dict[str, str] = {}
+        changed_node_ids: Set[str] = set()
 
         for model in models:
             try:
                 cube_schema = self._convert_model_to_cube(model)
-                file_path = self._write_cube_file(cube_schema)
-                generated_files[model.node_id] = str(file_path)
-                print(f"  Generated: {file_path.name}")
+                content = self._render_cube_content(cube_schema)
+                checksum = hashlib.sha256(content.encode()).hexdigest()
+                file_path = self.output_dir / f"{cube_schema.cube_name}.js"
+
+                stored = (stored_checksums or {}).get(model.node_id)
+                if not stored or stored != checksum:
+                    with open(file_path, "w") as f:
+                        f.write(content)
+                    changed_node_ids.add(model.node_id)
+                    print(f"  Generated: {file_path.name}")
+                else:
+                    print(f"  Unchanged: {file_path.name}")
+
+                file_paths[model.node_id] = str(file_path)
+                output_checksums[model.node_id] = checksum
             except Exception as e:
                 print(f"  Error generating cube for {model.name}: {str(e)}")
 
-        return generated_files
+        return file_paths, output_checksums, changed_node_ids
     
     def _convert_model_to_cube(self, model: DbtModel) -> CubeSchema:
         """Convert a dbt model to a Cube.js schema"""
@@ -137,30 +156,19 @@ class CubeGenerator:
             pre_aggregations=pre_aggregations
         )
     
-    def _write_cube_file(self, cube_schema: CubeSchema) -> Path:
-        """Write a Cube.js schema to file"""
-        
-        # Try to use template if available
+    def _render_cube_content(self, cube_schema: CubeSchema) -> str:
+        """Render a Cube.js schema to a string without writing to disk."""
         template_path = self.template_dir / 'cube_template.js'
         if template_path.exists():
             template = self.env.get_template('cube_template.js')
-            content = template.render(
+            return template.render(
                 cube_name=cube_schema.cube_name,
                 sql=cube_schema.sql,
                 dimensions=cube_schema.dimensions,
                 measures=cube_schema.measures,
                 pre_aggregations=cube_schema.pre_aggregations
             )
-        else:
-            # Fallback to hardcoded template
-            content = self._generate_cube_content(cube_schema)
-        
-        # Write to file
-        file_path = self.output_dir / f"{cube_schema.cube_name}.js"
-        with open(file_path, 'w') as f:
-            f.write(content)
-        
-        return file_path
+        return self._generate_cube_content(cube_schema)
     
     def _generate_cube_content(self, cube_schema: CubeSchema) -> str:
         """Generate Cube.js content using hardcoded template"""

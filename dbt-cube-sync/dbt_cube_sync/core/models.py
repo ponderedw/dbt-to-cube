@@ -113,6 +113,7 @@ class ModelState(BaseModel):
     has_metrics: bool
     last_generated: str
     output_file: str
+    output_checksum: Optional[str] = None  # checksum of the generated .js file
     # Per-model sync status for each step
     superset_sync_status: Optional[str] = None  # 'success', 'failed', or None (not attempted)
     rag_sync_status: Optional[str] = None  # 'success', 'failed', or None (not attempted)

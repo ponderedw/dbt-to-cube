@@ -14,6 +14,15 @@ from typing import Dict, List, Optional, Set, Tuple
 from .models import ModelState, SyncState
 
 
+def compute_file_checksum(file_path: str) -> Optional[str]:
+    """Compute SHA256 checksum of a file's contents. Returns None if file doesn't exist."""
+    try:
+        with open(file_path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
 def compute_model_checksum(node_data: dict) -> str:
     """
     Compute a checksum that includes both the dbt model checksum
@@ -130,14 +139,21 @@ class StateManager:
                 modified.add(node_id)
                 continue
 
-            # Even if checksum matches, check if output file exists
-            # If file was deleted manually, we need to regenerate it
-            # Skip this check if check_output_files is False (e.g., CI comparison)
             if check_output_files:
                 output_file = previous_state.models[node_id].output_file
                 if output_file and not os.path.exists(output_file):
                     print(f"  Output file missing for {node_id}, will regenerate")
                     modified.add(node_id)
+                    continue
+
+                # Detect package logic changes: if the JS file on disk no longer
+                # matches the stored output_checksum, regenerate it.
+                stored_output_checksum = previous_state.models[node_id].output_checksum
+                if stored_output_checksum and output_file:
+                    current_output_checksum = compute_file_checksum(output_file)
+                    if current_output_checksum != stored_output_checksum:
+                        print(f"  Output file changed for {node_id}, will regenerate")
+                        modified.add(node_id)
 
         return added, modified, removed
 
@@ -146,6 +162,7 @@ class StateManager:
         manifest_path: str,
         manifest_nodes: Dict[str, dict],
         generated_files: Dict[str, str],
+        output_checksums: Optional[Dict[str, str]] = None,
     ) -> SyncState:
         """
         Build a new state from sync results.
@@ -176,6 +193,8 @@ class StateManager:
                 has_metrics=has_metrics,
                 last_generated=timestamp,
                 output_file=generated_files[node_id],
+                output_checksum=(output_checksums or {}).get(node_id)
+                    or compute_file_checksum(generated_files[node_id]),
             )
 
         return SyncState(
@@ -192,6 +211,8 @@ class StateManager:
         manifest_nodes: Dict[str, dict],
         generated_files: Dict[str, str],
         removed_node_ids: Set[str],
+        output_checksums: Optional[Dict[str, str]] = None,
+        changed_node_ids: Optional[Set[str]] = None,
     ) -> SyncState:
         """
         Merge new sync results with previous state for incremental updates.
@@ -200,13 +221,17 @@ class StateManager:
             previous_state: Previous sync state (or None for first run)
             manifest_path: Path to the manifest file used
             manifest_nodes: Dict of node_id -> node data from manifest
-            generated_files: Dict of node_id -> output_file_path (only newly generated)
+            generated_files: Dict of node_id -> output_file_path (all processed models)
             removed_node_ids: Set of node_ids that were removed
+            output_checksums: Dict of node_id -> content checksum of generated file
+            changed_node_ids: Set of node_ids whose content actually changed.
+                              Superset/RAG sync is reset only for these.
 
         Returns:
             Merged SyncState
         """
         timestamp = datetime.utcnow().isoformat() + "Z"
+        changed = changed_node_ids or set(generated_files.keys())
 
         models: Dict[str, ModelState] = {}
 
@@ -216,23 +241,31 @@ class StateManager:
                 if node_id not in removed_node_ids:
                     models[node_id] = model_state
 
-        # Update/add newly generated models
+        # Update/add all processed models
         for node_id, output_file in generated_files.items():
             node_data = manifest_nodes.get(node_id, {})
-            # Use combined checksum that includes metrics/meta config
             checksum = compute_model_checksum(node_data)
             has_metrics = bool(
                 node_data.get("config", {}).get("meta", {}).get("metrics")
             )
+            new_output_checksum = (output_checksums or {}).get(node_id) \
+                or compute_file_checksum(output_file)
 
-            # For newly generated/modified models, reset sync status (they need to be re-synced)
+            content_changed = node_id in changed
+            prev = models.get(node_id)
+
             models[node_id] = ModelState(
                 checksum=checksum,
                 has_metrics=has_metrics,
-                last_generated=timestamp,
+                last_generated=timestamp if content_changed else (
+                    prev.last_generated if prev else timestamp),
                 output_file=output_file,
-                superset_sync_status=None,  # Reset - needs sync
-                rag_sync_status=None,  # Reset - needs sync
+                output_checksum=new_output_checksum,
+                # Only reset Superset/RAG sync when content actually changed
+                superset_sync_status=None if content_changed else (
+                    prev.superset_sync_status if prev else None),
+                rag_sync_status=None if content_changed else (
+                    prev.rag_sync_status if prev else None),
             )
 
         return SyncState(

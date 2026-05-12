@@ -131,19 +131,12 @@ def dbt_to_cube(
         manifest_nodes = parser.get_manifest_nodes_with_metrics()
         click.echo(f"Found {len(manifest_nodes)} models with metrics in manifest")
 
-        # Determine which models need regeneration
+        # Handle removed models (dbt checksum still used to detect removals)
+        removed = set()
         if use_incremental and previous_state:
-            added, modified, removed = state_manager.get_changed_models(
-                manifest_nodes, previous_state, check_output_files=not ci_mode
+            _, _, removed = state_manager.get_changed_models(
+                manifest_nodes, previous_state, check_output_files=False
             )
-
-            if not added and not modified and not removed:
-                click.echo("No changes detected. All models are up to date.")
-                sys.exit(0)
-
-            click.echo(f"Incremental sync: {len(added)} added, {len(modified)} modified, {len(removed)} removed")
-
-            # Clean up files for removed models
             if removed:
                 files_to_delete = state_manager.get_files_to_delete(previous_state, removed)
                 for file_path in files_to_delete:
@@ -153,25 +146,8 @@ def dbt_to_cube(
                     except OSError as e:
                         click.echo(f"  Warning: Could not delete {file_path}: {e}")
 
-            # Only parse changed models
-            node_ids_to_process = list(added | modified)
-            if not node_ids_to_process:
-                # Only removals, no models to regenerate
-                if state_manager:
-                    new_state = state_manager.merge_state(
-                        previous_state, manifest, manifest_nodes, {}, removed
-                    )
-                    state_manager.save_state(new_state)
-                    click.echo(f"State saved to {state_path}")
-                click.echo("Sync complete (only removals)")
-                sys.exit(0)
-
-            parsed_models = parser.parse_models(node_ids_filter=node_ids_to_process)
-        else:
-            # Full sync - parse all models
-            if force_full_sync:
-                click.echo("Forcing full sync...")
-            parsed_models = parser.parse_models()
+        # Always parse and generate all models — output checksum decides what changed
+        parsed_models = parser.parse_models()
 
         click.echo(f"Processing {len(parsed_models)} dbt models")
 
@@ -179,26 +155,35 @@ def dbt_to_cube(
             click.echo("No models found. Make sure your models have both columns and metrics defined.")
             sys.exit(0)
 
+        # Pass stored output checksums so unchanged files are not overwritten
+        stored_checksums = {}
+        if previous_state:
+            stored_checksums = {
+                nid: m.output_checksum
+                for nid, m in previous_state.models.items()
+                if m.output_checksum
+            }
+
         click.echo("Generating Cube.js schemas...")
         generator = CubeGenerator(template_dir, output)
-        generated_files = generator.generate_cube_files(parsed_models)
+        file_paths, output_checksums, changed_ids = generator.generate_cube_files(
+            parsed_models, stored_checksums=stored_checksums
+        )
 
-        click.echo(f"Generated {len(generated_files)} Cube.js files:")
-        for node_id, file_path in generated_files.items():
-            click.echo(f"   {file_path}")
+        click.echo(f"Processed {len(file_paths)} Cube.js files ({len(changed_ids)} changed):")
+        for node_id, fp in file_paths.items():
+            click.echo(f"   {fp}")
 
         # Save state (if enabled)
         if state_manager:
             if use_incremental and previous_state:
-                # Merge with previous state
-                removed_ids = removed if 'removed' in dir() else set()
                 new_state = state_manager.merge_state(
-                    previous_state, manifest, manifest_nodes, generated_files, removed_ids
+                    previous_state, manifest, manifest_nodes, file_paths, removed,
+                    output_checksums=output_checksums, changed_node_ids=changed_ids,
                 )
             else:
-                # Create fresh state
                 new_state = state_manager.create_state_from_results(
-                    manifest, manifest_nodes, generated_files
+                    manifest, manifest_nodes, file_paths, output_checksums=output_checksums
                 )
             state_manager.save_state(new_state)
             click.echo(f"State saved to {state_path}")
@@ -543,81 +528,70 @@ def sync_all(
         manifest_nodes = parser.get_manifest_nodes_with_metrics()
         click.echo(f"  Found {len(manifest_nodes)} models with metrics")
 
-        # Determine what changed
+        # Detect removed models and clean up their files
+        removed_models = set()
         if not force_full_sync and previous_state:
-            added_models, modified_models, removed_models = state_manager.get_changed_models(
-                manifest_nodes, previous_state
+            _, _, removed_models = state_manager.get_changed_models(
+                manifest_nodes, previous_state, check_output_files=False
             )
-
-            if not added_models and not modified_models and not removed_models:
-                click.echo("  No changes detected - all models up to date")
-            else:
+            if removed_models:
                 changes_detected = True
-                click.echo(f"  Changes: {len(added_models)} added, {len(modified_models)} modified, {len(removed_models)} removed")
+                files_to_delete = state_manager.get_files_to_delete(previous_state, removed_models)
+                for file_path in files_to_delete:
+                    try:
+                        os.remove(file_path)
+                        click.echo(f"    Deleted: {Path(file_path).name}")
+                    except OSError:
+                        pass
 
-                # Clean up removed model files
-                if removed_models:
-                    files_to_delete = state_manager.get_files_to_delete(previous_state, removed_models)
-                    for file_path in files_to_delete:
-                        try:
-                            os.remove(file_path)
-                            click.echo(f"    Deleted: {Path(file_path).name}")
-                        except OSError:
-                            pass
-
-            node_ids_to_process = list(added_models | modified_models)
-        else:
-            # Force full sync
-            changes_detected = True
-            added_models = set(manifest_nodes.keys())
-            node_ids_to_process = list(manifest_nodes.keys())
-            click.echo(f"  Full sync: processing all {len(node_ids_to_process)} models")
-
-            # Remove .js files that no longer exist in the new manifest
+        # Remove stale .js files on force-full-sync
+        if force_full_sync:
             output_path = Path(output)
             if output_path.exists():
                 expected_stems = {
                     CubeGenerator._to_pascal_case(node_data.get("name", ""))
                     for node_data in manifest_nodes.values()
                 }
-                stale_files = [
-                    f for f in output_path.glob("*.js")
-                    if f.stem not in expected_stems
-                ]
-                for stale_file in stale_files:
-                    stale_file.unlink()
-                if stale_files:
-                    click.echo(f"  Removed {len(stale_files)} stale .js files")
+                for stale_file in output_path.glob("*.js"):
+                    if stale_file.stem not in expected_stems:
+                        stale_file.unlink()
 
-        # Generate Cube.js files for changed models
-        generated_files = {}
+        # Always generate all models — output checksum decides what's actually new
+        stored_checksums = {}
+        if previous_state and not force_full_sync:
+            stored_checksums = {
+                nid: m.output_checksum
+                for nid, m in previous_state.models.items()
+                if m.output_checksum
+            }
+
+        file_paths: Dict[str, str] = {}
+        output_checksums: Dict[str, str] = {}
+        changed_ids: Set[str] = set()
         cube_sync_error = None
         try:
-            if node_ids_to_process:
-                parsed_models = parser.parse_models(node_ids_filter=node_ids_to_process)
-
-                if parsed_models:
-                    generator = CubeGenerator('./cube/templates', output)
-                    generated_files = generator.generate_cube_files(parsed_models)
-                    click.echo(f"  Generated {len(generated_files)} Cube.js files")
+            parsed_models = parser.parse_models()
+            if parsed_models:
+                generator = CubeGenerator('./cube/templates', output)
+                file_paths, output_checksums, changed_ids = generator.generate_cube_files(
+                    parsed_models, stored_checksums=stored_checksums
+                )
+                if changed_ids:
+                    changes_detected = True
+                click.echo(f"  Processed {len(file_paths)} Cube.js files ({len(changed_ids)} changed)")
         except Exception as e:
             cube_sync_error = str(e)
             click.echo(f"  Error: {cube_sync_error}", err=True)
 
         # Build/update state
-        if changes_detected or force_full_sync:
-            if previous_state and not force_full_sync:
-                current_state = state_manager.merge_state(
-                    previous_state, manifest, manifest_nodes, generated_files, removed_models
-                )
-            else:
-                current_state = state_manager.create_state_from_results(
-                    manifest, manifest_nodes, generated_files
-                )
+        if previous_state and not force_full_sync:
+            current_state = state_manager.merge_state(
+                previous_state, manifest, manifest_nodes, file_paths, removed_models,
+                output_checksums=output_checksums, changed_node_ids=changed_ids,
+            )
         else:
-            # No changes - use previous state or create empty one
-            current_state = previous_state or state_manager.create_state_from_results(
-                manifest, manifest_nodes, {}
+            current_state = state_manager.create_state_from_results(
+                manifest, manifest_nodes, file_paths, output_checksums=output_checksums
             )
 
         # Save cube sync state

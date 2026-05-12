@@ -5,147 +5,122 @@ cube(`CoursePerformanceSummary`, {
     course_id: {
       sql: `course_id`,
       type: `number`,
-      title: `Unique identifier for the course`
+      title: `Course ID`,
+      description: `Unique identifier for the course`
     },
 
     course_code: {
       sql: `course_code`,
       type: `string`,
-      title: `Course code (e.g., CS101, MATH201)`
+      title: `Course Code`,
+      description: `Course code (e.g., CS101, MATH201)`
     },
 
     course_name: {
       sql: `course_name`,
       type: `string`,
-      title: `Full name of the course`
+      title: `Course Name`,
+      description: `Full name of the course`
     },
 
     credits: {
       sql: `credits`,
       type: `number`,
-      title: `Number of credit hours for the course`
+      title: `Credit Hours`,
+      description: `Number of credit hours for the course`
     },
 
     difficulty_level: {
       sql: `difficulty_level`,
       type: `number`,
-      title: `Course difficulty level (1-5 scale)`
+      title: `Difficulty Level`,
+      description: `Course difficulty level (1-5 scale)`
     },
 
     department_name: {
       sql: `department_name`,
       type: `string`,
-      title: `Academic department offering the course`
+      title: `Department`,
+      description: `Academic department offering the course`
     },
 
     semester_name: {
       sql: `semester_name`,
       type: `string`,
-      title: `Semester when the course was offered`
+      title: `Semester`,
+      description: `Semester when the course was offered`
     },
 
     academic_year: {
       sql: `academic_year`,
       type: `string`,
-      title: `Academic year of the course offering`
+      title: `Academic Year`,
+      description: `Academic year of the course offering`
     },
 
     semester_start_date: {
       sql: `semester_start_date`,
       type: `time`,
-      title: `Start date of the semester`
+      title: `Semester Start`,
+      description: `Start date of the semester`
     },
 
     semester_end_date: {
       sql: `semester_end_date`,
       type: `time`,
-      title: `End date of the semester`
-    },
-
-    total_enrollments: {
-      sql: `total_enrollments`,
-      type: `number`,
-      title: `Total number of students enrolled in the course`
-    },
-
-    avg_grade_points: {
-      sql: `avg_grade_points`,
-      type: `number`,
-      title: `Average grade points achieved by students`
-    },
-
-    avg_attendance: {
-      sql: `avg_attendance`,
-      type: `number`,
-      title: `Average attendance percentage for the course`
-    },
-
-    excellent_performance: {
-      sql: `excellent_performance`,
-      type: `number`,
-      title: `Number of students with excellent performance (3.5+ GPA)`
-    },
-
-    passing_grades: {
-      sql: `passing_grades`,
-      type: `number`,
-      title: `Number of students with passing grades (2.0+ GPA)`
+      title: `Semester End`,
+      description: `End date of the semester`
     },
 
     instructor_name: {
       sql: `instructor_name`,
       type: `string`,
-      title: `Name of the course instructor`
+      title: `Instructor`,
+      description: `Name of the course instructor`
     },
 
     instructor_position: {
       sql: `instructor_position`,
       type: `string`,
-      title: `Academic position of the instructor`
-    },
-
-    pass_rate_percentage: {
-      sql: `pass_rate_percentage`,
-      type: `number`,
-      title: `Percentage of students who passed the course`
-    },
-
-    excellence_rate_percentage: {
-      sql: `excellence_rate_percentage`,
-      type: `number`,
-      title: `Percentage of students with excellent performance`
+      title: `Instructor Position`,
+      description: `Academic position of the instructor`
     },
 
     performance_category: {
       sql: `performance_category`,
       type: `string`,
-      title: `Overall performance category for the course`
+      title: `Performance Category`,
+      description: `Overall performance category for the course`
     }
   },
   
   measures: {
     average_course_gpa: {
       type: `avg`,
-      sql: `${avg_grade_points}`,
-      title: `Average Course Gpa`
+      sql: `avg_grade_points`,
+      title: `Average Course GPA`,
+      description: `Mean grade point average across all enrolled students`
     },
 
     course_pass_rate: {
       type: `avg`,
-      sql: `${pass_rate_percentage} / 100`,
-      title: `Course Pass Rate`
+      sql: `pass_rate_percentage / 100`,
+      title: `Course Pass Rate`,
+      description: `Proportion of students achieving a passing grade (2.0+ GPA)`
     },
 
     total_course_enrollments: {
       type: `sum`,
-      sql: `${total_enrollments}`,
-      title: `Total Course Enrollments`
+      sql: `total_enrollments`,
+      title: `Total Course Enrollments`,
+      description: `Total number of student enrollments across all course sections`
     },
 
     student_engagement_score: {
       type: `avg`,
-      sql: `(${avg_attendance} * 0.6 + ${avg_grade_points} * 25)`,
-      title: `Student Engagement Score`
+      sql: `(avg_attendance * 0.6 + avg_grade_points * 25)`,
+      title: `Student Engagement Score`,
+      description: `Composite score combining attendance (60%) and academic performance (40%)`
     }
   },
   

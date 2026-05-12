@@ -220,11 +220,14 @@ class DbtParser:
                 elif col_name in db_columns:
                     data_type = db_columns[col_name]
 
+                config_meta = (col_data.get('config') or {}).get('meta') or {}
+                direct_meta = col_data.get('meta') or {}
+                meta = {**config_meta, **direct_meta}
                 columns[col_name] = DbtColumn(
                     name=col_name,
                     data_type=data_type,
                     description=col_data.get('description'),
-                    meta=col_data.get('meta', {})
+                    meta=meta
                 )
         else:
             # If no manifest columns, use catalog or database columns
