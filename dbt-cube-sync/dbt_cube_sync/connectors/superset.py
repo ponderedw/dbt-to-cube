@@ -262,7 +262,10 @@ class SupersetConnector(BaseConnector):
             desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
 
             verbose_name = title_match.group(1) if title_match else dim_name.replace('_', ' ').title()
-            description = desc_match.group(1) if desc_match else None
+            if '__' in dim_name:
+                description = 'do not use, this is not dimension'
+            else:
+                description = desc_match.group(1) if desc_match else None
             
             dimensions.append({
                 'column_name': column_name,
@@ -313,16 +316,20 @@ class SupersetConnector(BaseConnector):
             measure_name = match.group(1)
             measure_content = match.group(2)
 
-            # Extract type
+            # Extract type, sql, title, description
             type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', measure_content)
             measure_type = type_match.group(1) if type_match else 'sum'
 
-            # Extract title and description
+            sql_match = re.search(r'sql:\s*`([^`]+)`', measure_content)
+            measure_sql = sql_match.group(1).strip() if sql_match else measure_name
+
             title_match = re.search(r'title:\s*[`\'"]([^`\'"]+)[`\'"]', measure_content)
             metric_name = title_match.group(1) if title_match else measure_name.replace('_', ' ').title()
 
             desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', measure_content)
-            description = desc_match.group(1) if desc_match else None
+            base_description = desc_match.group(1) if desc_match else None
+            agg_hint = f'{measure_type}({measure_sql})'
+            description = f'{base_description} ({agg_hint})' if base_description else agg_hint
 
             # Use MEASURE(CubeName.metric_name) syntax for Superset
             # This leverages Cube.js SQL API to handle aggregation properly

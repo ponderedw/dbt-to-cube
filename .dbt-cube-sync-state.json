@@ -1,12 +1,12 @@
 {
-  "version": "1.1",
-  "last_sync_timestamp": "2026-05-12T11:28:27.761802Z",
+  "version": "1.0",
+  "last_sync_timestamp": "2026-05-12T11:39:52.982899Z",
   "manifest_path": "/workspace/DbtEducationalDataProject/target/manifest.json",
   "models": {
     "model.DbtEducationalDataProject.course_performance_summary": {
       "checksum": "90478c7eaeb57363f140dbb3c4ed30c2ac5836cdb2c66ab6b94cb06a6cfca5b2",
       "has_metrics": true,
-      "last_generated": "2026-05-12T11:28:27.761802Z",
+      "last_generated": "2026-05-12T11:39:52.982899Z",
       "output_file": "/workspace/cube_output/CoursePerformanceSummary.js",
       "output_checksum": "c12a33469bec618355300337bcba89fdcf6c0e62c9f027d168fbb2755eb952c0",
       "superset_sync_status": null,
