@@ -136,7 +136,40 @@ class DbtParser:
                 nodes_with_metrics[node_id] = node_data
 
         return nodes_with_metrics
-    
+
+    def get_manifest_semantic_model_nodes(self) -> Dict[str, dict]:
+        """
+        Return MetricFlow semantic model entries as synthetic manifest node stubs.
+
+        The state manager tracks models by node_id.  MetricFlow cubes are saved
+        with IDs like ``semantic_model.<project>.<name>`` but those keys live in
+        ``manifest['semantic_models']``, not ``manifest['nodes']``.
+        Without this method, the removal check sees those IDs in the previous
+        state but not in ``manifest_nodes`` (which only covers ``nodes`` with
+        metrics) and wrongly deletes the generated files.
+        """
+        nodes: Dict[str, dict] = {}
+        for sm_id, sm_data in self.manifest.get('semantic_models', {}).items():
+            nodes[sm_id] = {
+                'checksum': {'checksum': ''},
+                'config': {'meta': sm_data},
+            }
+        return nodes
+
+    def parse_metricflow_models(self) -> List[DbtModel]:
+        """
+        Parse MetricFlow semantic models and metrics from manifest.json.
+
+        dbt compiles ``semantic_models`` and ``metrics`` YAML blocks into the
+        manifest (``manifest['semantic_models']`` / ``manifest['metrics']``),
+        so no separate project directory scan is needed.
+
+        Returns an empty list when no MetricFlow definitions are present.
+        """
+        from .metricflow_parser import MetricFlowParser
+        mf_parser = MetricFlowParser(self.manifest)
+        return mf_parser.parse()
+
     def _parse_model(self, node_id: str, node_data: dict) -> DbtModel:
         """Parse a single model from the manifest"""
         model_name = node_data.get('name', '')

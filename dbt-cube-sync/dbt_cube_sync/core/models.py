@@ -4,6 +4,83 @@ Pydantic models for data structures
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel
 
+# ---------------------------------------------------------------------------
+# MetricFlow semantic layer models
+# ---------------------------------------------------------------------------
+
+class MetricFlowDimensionTypeParams(BaseModel):
+    """Type parameters for a MetricFlow time dimension"""
+    time_granularity: Optional[str] = None  # day, week, month, quarter, year
+
+
+class MetricFlowEntity(BaseModel):
+    """Join key defined in a MetricFlow semantic model"""
+    name: str
+    type: str  # primary, foreign, unique, natural
+    expr: Optional[str] = None
+    description: Optional[str] = None
+    label: Optional[str] = None
+
+
+class MetricFlowDimension(BaseModel):
+    """Slicing attribute defined in a MetricFlow semantic model"""
+    name: str
+    type: str  # categorical, time
+    type_params: Optional[MetricFlowDimensionTypeParams] = None
+    expr: Optional[str] = None
+    description: Optional[str] = None
+    label: Optional[str] = None
+
+
+class MetricFlowMeasure(BaseModel):
+    """Base aggregation defined in a MetricFlow semantic model"""
+    name: str
+    agg: str  # sum, avg, count, count_distinct, min, max
+    expr: Optional[str] = None
+    description: Optional[str] = None
+    label: Optional[str] = None
+    agg_time_dimension: Optional[str] = None
+
+
+class MetricFlowSemanticModel(BaseModel):
+    """MetricFlow semantic model — maps to one Cube.js cube"""
+    name: str
+    model: str  # ref('model_name') or plain model_name
+    description: Optional[str] = None
+    label: Optional[str] = None
+    defaults: Optional[Dict[str, Any]] = None
+    entities: List[MetricFlowEntity] = []
+    dimensions: List[MetricFlowDimension] = []
+    measures: List[MetricFlowMeasure] = []
+    # Resolved from manifest
+    alias: Optional[str] = None
+    schema_name: Optional[str] = None
+    database: Optional[str] = None
+
+
+class MetricFlowTypeParams(BaseModel):
+    """Type-specific parameters for a MetricFlow metric"""
+    # simple
+    measure: Optional[str] = None
+    # derived
+    expr: Optional[str] = None
+    metrics: Optional[List[Dict[str, Any]]] = None
+    # ratio
+    numerator: Optional[str] = None
+    denominator: Optional[str] = None
+    # cumulative
+    window: Optional[str] = None
+    grain_to_date: Optional[str] = None
+
+
+class MetricFlowMetric(BaseModel):
+    """MetricFlow metric — becomes a Cube.js measure"""
+    name: str
+    label: Optional[str] = None
+    description: Optional[str] = None
+    type: str  # simple, derived, ratio, cumulative
+    type_params: MetricFlowTypeParams
+
 
 class DbtColumn(BaseModel):
     """Represents a dbt model column"""

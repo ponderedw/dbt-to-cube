@@ -258,14 +258,15 @@ class SupersetConnector(BaseConnector):
             type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', dim_content)
             dim_type = type_match.group(1) if type_match else 'string'
             
-            title_match = re.search(r'title:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
-            desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', dim_content)
+            title_match = re.search(r"title:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", dim_content)
+            desc_match = re.search(r"description:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", dim_content)
 
-            verbose_name = title_match.group(1) if title_match else dim_name.replace('_', ' ').title()
+            verbose_name = next((g for g in title_match.groups() if g is not None), None) if title_match else None
+            verbose_name = verbose_name if verbose_name else dim_name.replace('_', ' ').title()
             if '__' in dim_name:
                 description = 'do not use, this is not dimension'
             else:
-                description = desc_match.group(1) if desc_match else None
+                description = next((g for g in desc_match.groups() if g is not None), None) if desc_match else None
             
             dimensions.append({
                 'column_name': column_name,
@@ -323,11 +324,12 @@ class SupersetConnector(BaseConnector):
             sql_match = re.search(r'sql:\s*`([^`]+)`', measure_content)
             measure_sql = sql_match.group(1).strip() if sql_match else measure_name
 
-            title_match = re.search(r'title:\s*[`\'"]([^`\'"]+)[`\'"]', measure_content)
-            metric_name = title_match.group(1) if title_match else measure_name.replace('_', ' ').title()
+            title_match = re.search(r"title:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", measure_content)
+            metric_name = next((g for g in title_match.groups() if g is not None), None) if title_match else None
+            metric_name = metric_name if metric_name else measure_name.replace('_', ' ').title()
 
-            desc_match = re.search(r'description:\s*[`\'"]([^`\'"]+)[`\'"]', measure_content)
-            base_description = desc_match.group(1) if desc_match else None
+            desc_match = re.search(r"description:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", measure_content)
+            base_description = next((g for g in desc_match.groups() if g is not None), None) if desc_match else None
             agg_hint = f'{measure_type}({measure_sql})'
             description = f'{base_description} ({agg_hint})' if base_description else agg_hint
 
@@ -509,6 +511,7 @@ class SupersetConnector(BaseConnector):
             else:
                 print(f"✗ Failed to update dataset: {response.status_code}")
                 print(f"Response: {response.text}")
+                raise Exception(f"Failed to update dataset {dataset_id}: {response.status_code} {response.text}")
     
     def _update_columns(self, existing_columns: List[dict], dimensions: List[dict]) -> List[dict]:
         """Update columns with metadata from dimensions"""

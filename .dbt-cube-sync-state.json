@@ -1,14 +1,32 @@
 {
-  "version": "1.0",
-  "last_sync_timestamp": "2026-05-12T11:39:52.982899Z",
+  "version": "1.1",
+  "last_sync_timestamp": "2026-05-17T14:14:40.230292Z",
   "manifest_path": "/workspace/DbtEducationalDataProject/target/manifest.json",
   "models": {
     "model.DbtEducationalDataProject.course_performance_summary": {
       "checksum": "90478c7eaeb57363f140dbb3c4ed30c2ac5836cdb2c66ab6b94cb06a6cfca5b2",
       "has_metrics": true,
-      "last_generated": "2026-05-12T11:39:52.982899Z",
+      "last_generated": "2026-05-17T13:32:21.649172Z",
       "output_file": "/workspace/cube_output/CoursePerformanceSummary.js",
       "output_checksum": "c12a33469bec618355300337bcba89fdcf6c0e62c9f027d168fbb2755eb952c0",
+      "superset_sync_status": null,
+      "rag_sync_status": null
+    },
+    "semantic_model.semantic_course_performance.semantic_course_performance": {
+      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
+      "has_metrics": false,
+      "last_generated": "2026-05-17T14:14:40.230292Z",
+      "output_file": "/workspace/cube_output/SemanticCoursePerformance.js",
+      "output_checksum": "0f5bb61be71928304adec9c775dd9d4ac1ab5a0171cd54f25d52c2d229c6f677",
+      "superset_sync_status": null,
+      "rag_sync_status": null
+    },
+    "semantic_model.semantic_semester_enrollment.semantic_semester_enrollment": {
+      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
+      "has_metrics": false,
+      "last_generated": "2026-05-17T14:14:40.230292Z",
+      "output_file": "/workspace/cube_output/SemanticSemesterEnrollment.js",
+      "output_checksum": "746279114a3664408c0a98f8ed7c9ee780a3090e7cd60aafb91fc6d7bb50784a",
       "superset_sync_status": null,
       "rag_sync_status": null
     }

@@ -90,7 +90,7 @@ def dbt_to_cube(
     state_path: str,
     force_full_sync: bool,
     no_state: bool,
-    ci_mode: bool
+    ci_mode: bool,
 ):
     """Generate Cube.js schemas from dbt models"""
     try:
@@ -124,11 +124,13 @@ def dbt_to_cube(
             manifest_path=manifest,
             catalog_path=catalog,
             sqlalchemy_uri=sqlalchemy_uri,
-            model_filter=model_filter
+            model_filter=model_filter,
         )
 
         # Get all manifest nodes with metrics (for checksum comparison)
         manifest_nodes = parser.get_manifest_nodes_with_metrics()
+        # Include MetricFlow semantic model stubs so they are never flagged as removed
+        manifest_nodes.update(parser.get_manifest_semantic_model_nodes())
         click.echo(f"Found {len(manifest_nodes)} models with metrics in manifest")
 
         # Handle removed models (dbt checksum still used to detect removals)
@@ -148,6 +150,14 @@ def dbt_to_cube(
 
         # Always parse and generate all models — output checksum decides what changed
         parsed_models = parser.parse_models()
+
+        # Also include MetricFlow semantic models (if any)
+        mf_models = parser.parse_metricflow_models()
+        if mf_models:
+            click.echo(f"Found {len(mf_models)} MetricFlow semantic model(s)")
+            # Avoid duplicates (model names already present via config.meta.metrics)
+            existing_names = {m.name for m in parsed_models}
+            parsed_models += [m for m in mf_models if m.name not in existing_names]
 
         click.echo(f"Processing {len(parsed_models)} dbt models")
 
@@ -526,6 +536,7 @@ def sync_all(
         )
 
         manifest_nodes = parser.get_manifest_nodes_with_metrics()
+        manifest_nodes.update(parser.get_manifest_semantic_model_nodes())
         click.echo(f"  Found {len(manifest_nodes)} models with metrics")
 
         # Detect removed models and clean up their files

@@ -60,7 +60,7 @@ class CubeGenerator:
                 file_path = self.output_dir / f"{cube_schema.cube_name}.js"
 
                 stored = (stored_checksums or {}).get(model.node_id)
-                if not stored or stored != checksum:
+                if not stored or stored != checksum or not file_path.exists():
                     with open(file_path, "w") as f:
                         f.write(content)
                     changed_node_ids.add(model.node_id)

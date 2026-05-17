@@ -1,0 +1,76 @@
+version: 2
+
+exposures:
+
+  - name: cube_academic_analytics
+    type: application
+    maturity: high
+    url: http://localhost:4000
+    description: >
+      Cube.js semantic layer exposing course performance and semester enrollment
+      metrics to downstream BI tools. Generated automatically by dbt-cube-sync.
+
+    owner:
+      name: Academic Analytics Team
+      email: academic-analytics@university.edu
+
+    depends_on:
+      - metric('total_course_enrollments')
+      - metric('average_course_gpa')
+      - metric('average_pass_rate')
+      - metric('average_engagement_score')
+      - metric('cumulative_enrollments')
+      - metric('gpa_pass_quality_index')
+      - metric('total_semester_headcount')
+      - metric('total_semester_courses')
+      - metric('average_semester_gpa')
+      - metric('total_deans_list')
+      - metric('total_on_probation')
+      - metric('deans_list_rate')
+      - metric('academic_risk_ratio')
+      - metric('courses_per_student')
+
+  - name: superset_course_performance_dashboard
+    type: dashboard
+    maturity: high
+    url: http://localhost:8088
+    description: >
+      Superset dashboard built on the CoursePerformanceSummary and
+      SemanticCoursePerformance Cube datasets. Tracks GPA, pass rates,
+      and engagement scores by department and semester.
+
+    owner:
+      name: Academic Analytics Team
+      email: academic-analytics@university.edu
+
+    depends_on:
+      - ref('course_performance_summary')
+      - metric('total_course_enrollments')
+      - metric('average_course_gpa')
+      - metric('average_pass_rate')
+      - metric('average_engagement_score')
+      - metric('gpa_pass_quality_index')
+      - metric('cumulative_enrollments')
+
+  - name: superset_semester_enrollment_dashboard
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8088
+    description: >
+      Superset dashboard built on the SemanticSemesterEnrollment Cube dataset.
+      Tracks headcount, Dean's List standing, academic risk, and course load
+      per semester.
+
+    owner:
+      name: Academic Analytics Team
+      email: academic-analytics@university.edu
+
+    depends_on:
+      - metric('total_semester_headcount')
+      - metric('total_semester_courses')
+      - metric('average_semester_gpa')
+      - metric('total_deans_list')
+      - metric('total_on_probation')
+      - metric('deans_list_rate')
+      - metric('academic_risk_ratio')
+      - metric('courses_per_student')
