@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dbt-cube-sync"
-version = "0.1.0a35"
+version = "0.1.0a36"
 description = "Synchronization tool for dbt models to Cube.js schemas and BI tools"
 authors = ["Ponder"]
 readme = "README.md"
@@ -14,6 +14,7 @@ click = "^8.1.7"
 pydantic = "^2.5.0"
 jinja2 = "^3.1.2"
 sqlalchemy = "^2.0.0"
+packaging = ">=22.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
