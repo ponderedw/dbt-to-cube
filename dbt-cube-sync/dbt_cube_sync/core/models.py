@@ -52,6 +52,7 @@ class MetricFlowSemanticModel(BaseModel):
     entities: List[MetricFlowEntity] = []
     dimensions: List[MetricFlowDimension] = []
     measures: List[MetricFlowMeasure] = []
+    pre_aggregations: Dict[str, Any] = {}
     # Resolved from manifest
     alias: Optional[str] = None
     schema_name: Optional[str] = None

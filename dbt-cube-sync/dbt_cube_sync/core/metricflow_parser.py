@@ -16,6 +16,8 @@ from .models import (
     DbtModel,
     DbtColumn,
     DbtMetric,
+    DbtPreAggregation,
+    DbtRefreshKey,
     MetricFlowSemanticModel,
     MetricFlowEntity,
     MetricFlowDimension,
@@ -119,6 +121,8 @@ class MetricFlowParser:
     def _parse_sm_manifest(self, data: dict) -> Optional[MetricFlowSemanticModel]:
         try:
             node_rel = data.get('node_relation') or {}
+            config_meta = (data.get('config') or {}).get('meta') or {}
+            pre_aggs_raw = config_meta.get('pre_aggregations') or {}
             return MetricFlowSemanticModel(
                 name=data['name'],
                 model=data.get('model', ''),
@@ -128,6 +132,7 @@ class MetricFlowParser:
                 entities=self._parse_entities(data.get('entities', [])),
                 dimensions=self._parse_dimensions(data.get('dimensions', [])),
                 measures=self._parse_measures(data.get('measures', [])),
+                pre_aggregations=pre_aggs_raw,
                 alias=node_rel.get('alias'),
                 schema_name=node_rel.get('schema_name') or node_rel.get('schema'),
                 database=node_rel.get('database'),
@@ -135,6 +140,34 @@ class MetricFlowParser:
         except Exception as exc:
             print(f"  Warning: skipping semantic model '{data.get('name', '?')}': {exc}")
             return None
+
+    # -- pre-aggregation parser --------------------------------------------
+
+    @staticmethod
+    def _parse_pre_aggregations(raw: dict) -> Dict[str, DbtPreAggregation]:
+        result: Dict[str, DbtPreAggregation] = {}
+        for name, cfg in (raw or {}).items():
+            if not isinstance(cfg, dict):
+                continue
+            rk_raw = cfg.get('refresh_key')
+            refresh_key = None
+            if isinstance(rk_raw, dict):
+                refresh_key = DbtRefreshKey(
+                    every=rk_raw.get('every'),
+                    sql=rk_raw.get('sql'),
+                    incremental=rk_raw.get('incremental'),
+                    update_window=rk_raw.get('update_window'),
+                )
+            result[name] = DbtPreAggregation(
+                name=name,
+                type=cfg.get('type', 'rollup'),
+                measures=cfg.get('measures', []),
+                dimensions=cfg.get('dimensions', []),
+                time_dimension=cfg.get('time_dimension'),
+                granularity=cfg.get('granularity'),
+                refresh_key=refresh_key,
+            )
+        return result
 
     # -- shared field parsers ----------------------------------------------
 
@@ -371,6 +404,7 @@ class MetricFlowParser:
             node_id=f"semantic_model.{sm.name}.{sm.name}",
             columns=columns,
             metrics=metrics,
+            pre_aggregations=self._parse_pre_aggregations(sm.pre_aggregations),
         )
 
     def _convert_metric(

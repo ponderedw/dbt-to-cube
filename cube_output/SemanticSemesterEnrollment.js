@@ -88,20 +88,6 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Number of students placed on academic probation.`
     },
 
-    courses_per_student: {
-      type: `number`,
-      sql: `${total_semester_courses} / ${total_semester_headcount}`,
-      title: `Courses per Student`,
-      description: `Average number of courses taken per enrolled student each semester.`
-    },
-
-    total_semester_headcount: {
-      type: `sum`,
-      sql: `unique_students`,
-      title: `Total Semester Headcount`,
-      description: `Total distinct students enrolled across all semesters.`
-    },
-
     average_semester_gpa: {
       type: `avg`,
       sql: `avg_semester_grade_points`,
@@ -116,18 +102,18 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Proportion of enrolled students achieving Dean's List standing.`
     },
 
+    total_deans_list: {
+      type: `sum`,
+      sql: `deans_list_students`,
+      title: `Total Dean's List`,
+      description: `Total students achieving Dean's List standing.`
+    },
+
     academic_risk_ratio: {
       type: `number`,
       sql: `${total_on_probation} / NULLIF(${total_semester_headcount}, 0)`,
       title: `Academic Risk Ratio`,
       description: `Ratio of students on academic probation to total enrolled students.`
-    },
-
-    total_semester_courses: {
-      type: `sum`,
-      sql: `unique_courses`,
-      title: `Total Semester Courses`,
-      description: `Total distinct courses offered across all semesters.`
     },
 
     total_on_probation: {
@@ -137,11 +123,38 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Total students placed on academic probation.`
     },
 
-    total_deans_list: {
+    courses_per_student: {
+      type: `number`,
+      sql: `${total_semester_courses} / ${total_semester_headcount}`,
+      title: `Courses per Student`,
+      description: `Average number of courses taken per enrolled student each semester.`
+    },
+
+    total_semester_courses: {
       type: `sum`,
-      sql: `deans_list_students`,
-      title: `Total Dean's List`,
-      description: `Total students achieving Dean's List standing.`
+      sql: `unique_courses`,
+      title: `Total Semester Courses`,
+      description: `Total distinct courses offered across all semesters.`
+    },
+
+    total_semester_headcount: {
+      type: `sum`,
+      sql: `unique_students`,
+      title: `Total Semester Headcount`,
+      description: `Total distinct students enrolled across all semesters.`
+    }
+  },
+  
+  pre_aggregations: {
+    enrollment_by_semester_type_quarterly: {
+      type: `rollup`,
+      measures: [CUBE.total_semester_enrollments, CUBE.total_semester_headcount, CUBE.total_deans_list],
+      dimensions: [CUBE.semester_type, CUBE.academic_year],
+      time_dimension: CUBE.start_date,
+      granularity: `quarter`,
+      refresh_key: {
+        every: `12 hours`
+      }
     }
   }
 });

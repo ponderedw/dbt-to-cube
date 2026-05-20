@@ -88,11 +88,18 @@ cube(`SemanticCoursePerformance`, {
       description: `Average composite engagement score (60% attendance + 40% GPA component).`
     },
 
-    total_course_enrollments: {
-      type: `sum`,
-      sql: `total_enrollments`,
-      title: `Total Course Enrollments`,
-      description: `Total number of student enrolments across all course offerings.`
+    gpa_pass_quality_index: {
+      type: `number`,
+      sql: `${average_course_gpa} * ${average_pass_rate} / 100`,
+      title: `GPA–Pass Quality Index`,
+      description: `Composite quality score: GPA normalised to 0-100 multiplied by pass rate, divided by 100.`
+    },
+
+    average_course_gpa: {
+      type: `avg`,
+      sql: `avg_grade_points`,
+      title: `Average Course GPA`,
+      description: `Mean grade point average across all course offerings.`
     },
 
     average_engagement_score: {
@@ -116,18 +123,24 @@ cube(`SemanticCoursePerformance`, {
       description: `Running total of course enrolments over time.`
     },
 
-    average_course_gpa: {
-      type: `avg`,
-      sql: `avg_grade_points`,
-      title: `Average Course GPA`,
-      description: `Mean grade point average across all course offerings.`
-    },
-
-    gpa_pass_quality_index: {
-      type: `number`,
-      sql: `${average_course_gpa} * ${average_pass_rate} / 100`,
-      title: `GPA–Pass Quality Index`,
-      description: `Composite quality score: GPA normalised to 0-100 multiplied by pass rate, divided by 100.`
+    total_course_enrollments: {
+      type: `sum`,
+      sql: `total_enrollments`,
+      title: `Total Course Enrollments`,
+      description: `Total number of student enrolments across all course offerings.`
+    }
+  },
+  
+  pre_aggregations: {
+    course_by_department_monthly: {
+      type: `rollup`,
+      measures: [CUBE.course_enrollment_count, CUBE.total_course_enrollments, CUBE.cumulative_enrollments],
+      dimensions: [CUBE.department_name, CUBE.performance_category],
+      time_dimension: CUBE.semester_start_date,
+      granularity: `month`,
+      refresh_key: {
+        every: `1 day`
+      }
     }
   }
 });

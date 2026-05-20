@@ -5,6 +5,22 @@ semantic_models:
   - name: semantic_course_performance
     model: ref('course_performance_summary')
     primary_entity: course_id
+    config:
+      meta:
+        pre_aggregations:
+          course_by_department_monthly:
+            type: rollup
+            measures:
+              - course_enrollment_count      # base measure
+              - total_course_enrollments     # simple metric
+              - cumulative_enrollments       # cumulative metric
+            dimensions:
+              - department_name
+              - performance_category
+            time_dimension: semester_start_date
+            granularity: month
+            refresh_key:
+              every: "1 day"
     dimensions:
       - name: course_code
         type: categorical
@@ -80,6 +96,22 @@ semantic_models:
   - name: semantic_semester_enrollment
     model: ref('semester_enrollment_trends')
     primary_entity: semester_id
+    config:
+      meta:
+        pre_aggregations:
+          enrollment_by_semester_type_quarterly:
+            type: rollup
+            measures:
+              - total_semester_enrollments   # base measure
+              - total_semester_headcount     # simple metric
+              - total_deans_list             # simple metric
+            dimensions:
+              - semester_type
+              - academic_year
+            time_dimension: start_date
+            granularity: quarter
+            refresh_key:
+              every: "12 hours"
     dimensions:
       - name: semester_name
         type: categorical
