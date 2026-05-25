@@ -582,6 +582,12 @@ def sync_all(
         cube_sync_error = None
         try:
             parsed_models = parser.parse_models()
+
+            mf_models = parser.parse_metricflow_models()
+            if mf_models:
+                existing_names = {m.name for m in parsed_models}
+                parsed_models += [m for m in mf_models if m.name not in existing_names]
+
             if parsed_models:
                 generator = CubeGenerator('./cube/templates', output)
                 file_paths, output_checksums, changed_ids = generator.generate_cube_files(
