@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     secret_key: str = os.getenv('SECRET_KEY', 'change-me-in-production')
     fast_api_access_secret_token: str = os.getenv('FAST_API_ACCESS_SECRET_TOKEN', 'change-me-in-production')
 
+    # Bedrock reranker (Cohere Rerank v3.5, Bedrock only)
+    bedrock_reranker_model_id: str = os.getenv('BEDROCK_RERANKER_MODEL_ID', 'cohere.rerank-v3-5:0')
+    bedrock_reranker_model_arn: Optional[str] = os.getenv('BEDROCK_RERANKER_MODEL_ARN')
+
     # Deployment
     deploy_env: str = os.getenv('DEPLOY_ENV', 'local')
 

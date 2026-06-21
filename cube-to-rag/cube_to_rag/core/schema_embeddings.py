@@ -1,5 +1,6 @@
 """Generate and manage embeddings for Cube.js schemas with intelligent document splitting."""
 
+import logging
 import os
 import json
 import requests
@@ -8,11 +9,81 @@ from pathlib import Path
 from collections import defaultdict
 
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_milvus import Milvus
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cube_to_rag.core.llm import get_embeddings
 from cube_to_rag.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _rerank(query: str, docs: list[Document], top_n: int) -> tuple[list[Document], bool]:
+    """Rerank documents with Bedrock Cohere Rerank v3.5.
+
+    Returns (reranked_docs, was_reranked). Falls back to original order on any
+    error or when the provider is not Bedrock.
+    """
+    if not settings.llm_model_id.startswith('bedrock:') or not docs:
+        return docs[:top_n], False
+
+    try:
+        import boto3
+        session = boto3.session.Session()
+        region = session.region_name or settings.aws_default_region
+        client = boto3.client('bedrock-agent-runtime', region_name=region)
+
+        model_arn = settings.bedrock_reranker_model_arn
+        if not model_arn:
+            model_arn = f"arn:aws:bedrock:{region}::foundation-model/{settings.bedrock_reranker_model_id}"
+
+        response = client.rerank(
+            rerankingConfiguration={
+                'type': 'BEDROCK_RERANKING_MODEL',
+                'bedrockRerankingConfiguration': {
+                    'modelConfiguration': {'modelArn': model_arn},
+                    'numberOfResults': min(top_n, len(docs)),
+                },
+            },
+            sources=[
+                {
+                    'type': 'INLINE',
+                    'inlineDocumentSource': {
+                        'type': 'TEXT',
+                        'textDocument': {'text': doc.page_content},
+                    },
+                }
+                for doc in docs
+            ],
+            queries=[{'type': 'TEXT', 'textQuery': {'text': query}}],
+        )
+
+        # Cohere uses 'results'; Amazon models use 'rerankingResults'
+        reranking_results = response.get('results') or response.get('rerankingResults') or []
+        logger.info("Rerank API returned %d results (model_arn=%s)", len(reranking_results), model_arn)
+
+        if not reranking_results:
+            logger.warning("Rerank API returned no results — check model ARN or quota")
+            return docs[:top_n], False
+
+        reranked: list[Document] = []
+        for result in reranking_results:
+            idx = result.get('index')
+            score = result.get('relevanceScore')
+            if idx is None or idx >= len(docs):
+                continue
+            doc = docs[idx]
+            doc.metadata['rerank_score'] = round(score, 4) if score is not None else 0.0
+            reranked.append(doc)
+
+        logger.info("Reranked %d/%d docs", len(reranked), len(docs))
+        return (reranked, True) if reranked else (docs[:top_n], False)
+
+    except Exception as e:
+        logger.warning("Reranking failed, using similarity order: %s", e)
+        return docs[:top_n], False
 
 
 class CubeSplitStrategy:
@@ -572,17 +643,45 @@ Available Cubes (camelCase names):
         return self.vector_store
 
     def as_retriever(self, k: int = 7):
-        """
-        Get retriever for LangChain.
+        """Return a retriever with Bedrock reranking when available."""
+        return CubeSchemaRetriever(schema_embeddings=self, k=k)
 
-        Args:
-            k: Number of documents to retrieve (default: 7, increased due to document splitting)
 
-        Returns:
-            LangChain retriever
-        """
-        vector_store = self.get_vector_store()
-        return vector_store.as_retriever(search_kwargs={"k": k})
+class CubeSchemaRetriever(BaseRetriever):
+    """Milvus KNN retriever with optional Bedrock Cohere reranking.
+
+    Fetches a larger candidate pool from Milvus, then reranks with
+    Cohere Rerank v3.5 on Bedrock to return the top-k most relevant docs.
+    """
+
+    schema_embeddings: Any
+    k: int = 7
+    candidate_multiplier: int = 3  # fetch k*multiplier candidates before reranking
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+    ) -> List[Document]:
+        vector_store = self.schema_embeddings.get_vector_store()
+        fetch_k = self.k * self.candidate_multiplier
+
+        results = vector_store.similarity_search_with_score(query, k=fetch_k)
+        candidates = []
+        for doc, score in results:
+            doc.metadata['similarity_score'] = float(score)
+            candidates.append(doc)
+
+        reranked, was_reranked = _rerank(query, candidates, self.k)
+        logger.info(
+            "cube_schema_search: %d candidates → %d returned (reranked=%s)",
+            len(candidates), len(reranked), was_reranked,
+        )
+        return reranked
 
     def search_schemas(self, query: str, k: int = 7) -> List[Dict[str, Any]]:
         """
