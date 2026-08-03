@@ -72,6 +72,8 @@ class MetricFlowTypeParams(BaseModel):
     # cumulative
     window: Optional[str] = None
     grain_to_date: Optional[str] = None
+    # NEW dbt 1.12.0 format: metric aggregation parameters
+    metric_aggregation_params: Optional[Dict[str, Any]] = None
 
 
 class MetricFlowMetric(BaseModel):

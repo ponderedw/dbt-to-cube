@@ -237,6 +237,8 @@ class MetricFlowParser:
                 denominator=_parse_measure_name(denominator) if isinstance(denominator, dict) else denominator,
                 window=tp_raw.get('window'),
                 grain_to_date=tp_raw.get('grain_to_date'),
+                # NEW dbt 1.12.0 format: include metric_aggregation_params
+                metric_aggregation_params=tp_raw.get('metric_aggregation_params'),
             )
             return MetricFlowMetric(
                 name=data['name'],
@@ -302,6 +304,13 @@ class MetricFlowParser:
             return None
 
         if metric.type == 'simple':
+            # NEW dbt 1.12.0 format: Check metric_aggregation_params.semantic_model
+            if (hasattr(metric.type_params, 'metric_aggregation_params') and
+                metric.type_params.metric_aggregation_params and
+                metric.type_params.metric_aggregation_params.get('semantic_model')):
+                return metric.type_params.metric_aggregation_params['semantic_model']
+
+            # LEGACY format: Check measure reference
             base = metric.type_params.measure
             if base and base in measure_to_sm:
                 return measure_to_sm[base].name
@@ -416,6 +425,24 @@ class MetricFlowParser:
         measure_by_name = {m.name: m for m in sm_measures}
 
         if metric.type == 'simple':
+            # NEW dbt 1.12.0 format: Get aggregation info from metric_aggregation_params
+            if (metric.type_params.metric_aggregation_params and
+                metric.type_params.metric_aggregation_params.get('agg') and
+                metric.type_params.metric_aggregation_params.get('expr')):
+
+                agg_params = metric.type_params.metric_aggregation_params
+                cube_type = _AGG_MAP.get(agg_params['agg'].lower(), 'sum')
+                sql_expr = agg_params['expr']
+
+                return DbtMetric(
+                    name=metric.name,
+                    type=cube_type,
+                    sql=sql_expr,
+                    title=metric.label or metric.name.replace('_', ' ').title(),
+                    description=metric.description,
+                )
+
+            # LEGACY format: Look for measure reference
             base_name = metric.type_params.measure
             base = measure_by_name.get(base_name) if base_name else None
             if base:
