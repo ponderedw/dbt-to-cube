@@ -104,6 +104,7 @@ class MetricFlowParser:
     def _from_manifest(
         self,
     ) -> Tuple[List[MetricFlowSemanticModel], List[MetricFlowMetric]]:
+        # First pass: parse all semantic models and metrics
         sms = []
         for sm_data in self.manifest.get('semantic_models', {}).values():
             sm = self._parse_sm_manifest(sm_data)
@@ -116,7 +117,53 @@ class MetricFlowParser:
             if metric:
                 metrics.append(metric)
 
+        # Second pass: For new format, create virtual measures from simple metrics
+        # when semantic models have empty measures arrays
+        self._enrich_semantic_models_with_virtual_measures(sms, metrics)
+
         return sms, metrics
+
+    def _enrich_semantic_models_with_virtual_measures(
+        self,
+        semantic_models: List[MetricFlowSemanticModel],
+        metrics: List[MetricFlowMetric]
+    ):
+        """
+        For the new dbt 1.12+ format, create virtual measures from simple metrics
+        that have metric_aggregation_params pointing to semantic models with empty measures.
+        """
+        # Group metrics by semantic model they reference
+        metrics_by_sm: Dict[str, List[MetricFlowMetric]] = {}
+        for metric in metrics:
+            if (metric.type == 'simple' and
+                metric.type_params.metric_aggregation_params and
+                metric.type_params.metric_aggregation_params.get('semantic_model')):
+
+                sm_name = metric.type_params.metric_aggregation_params['semantic_model']
+                if sm_name not in metrics_by_sm:
+                    metrics_by_sm[sm_name] = []
+                metrics_by_sm[sm_name].append(metric)
+
+        # For each semantic model with empty measures, create virtual measures from its metrics
+        for sm in semantic_models:
+            if not sm.measures and sm.name in metrics_by_sm:
+                virtual_measures = []
+                for metric in metrics_by_sm[sm.name]:
+                    agg_params = metric.type_params.metric_aggregation_params
+                    # In new format, expr is at type_params.expr level, not inside metric_aggregation_params
+                    expr = metric.type_params.expr
+                    virtual_measure = MetricFlowMeasure(
+                        name=metric.name,  # Use metric name as measure name for virtual measures
+                        agg=agg_params.get('agg', 'sum'),
+                        expr=expr,  # This is the actual SQL expression like 'order_amount', '1', 'customer_id'
+                        description=metric.description,
+                        label=metric.label,
+                        agg_time_dimension=agg_params.get('agg_time_dimension'),
+                    )
+                    virtual_measures.append(virtual_measure)
+
+                # Replace empty measures with virtual ones
+                sm.measures = virtual_measures
 
     def _parse_sm_manifest(self, data: dict) -> Optional[MetricFlowSemanticModel]:
         try:
@@ -233,12 +280,14 @@ class MetricFlowParser:
                     for m in (tp_raw.get('metrics') or [])
                     if _parse_measure_name(m)
                 ],
-                numerator=_parse_measure_name(numerator) if isinstance(numerator, dict) else numerator,
-                denominator=_parse_measure_name(denominator) if isinstance(denominator, dict) else denominator,
+                numerator=numerator,  # Keep as-is for new object format or legacy string
+                denominator=denominator,  # Keep as-is for new object format or legacy string
                 window=tp_raw.get('window'),
                 grain_to_date=tp_raw.get('grain_to_date'),
                 # NEW dbt 1.12.0 format: include metric_aggregation_params
                 metric_aggregation_params=tp_raw.get('metric_aggregation_params'),
+                # NEW dbt 1.12.0 format: include cumulative_type_params
+                cumulative_type_params=tp_raw.get('cumulative_type_params'),
             )
             return MetricFlowMetric(
                 name=data['name'],
@@ -305,8 +354,7 @@ class MetricFlowParser:
 
         if metric.type == 'simple':
             # NEW dbt 1.12.0 format: Check metric_aggregation_params.semantic_model
-            if (hasattr(metric.type_params, 'metric_aggregation_params') and
-                metric.type_params.metric_aggregation_params and
+            if (metric.type_params.metric_aggregation_params and
                 metric.type_params.metric_aggregation_params.get('semantic_model')):
                 return metric.type_params.metric_aggregation_params['semantic_model']
 
@@ -320,9 +368,19 @@ class MetricFlowParser:
             if metric.type == 'derived' and metric.type_params.metrics:
                 refs = [m.get('name', '') for m in metric.type_params.metrics if m.get('name')]
             elif metric.type == 'ratio':
-                if metric.type_params.numerator:
+                # NEW format: numerator/denominator are objects with 'name' field
+                if isinstance(metric.type_params.numerator, dict):
+                    num_name = metric.type_params.numerator.get('name')
+                    if num_name:
+                        refs.append(num_name)
+                elif metric.type_params.numerator:  # LEGACY format: plain string
                     refs.append(metric.type_params.numerator)
-                if metric.type_params.denominator:
+
+                if isinstance(metric.type_params.denominator, dict):
+                    den_name = metric.type_params.denominator.get('name')
+                    if den_name:
+                        refs.append(den_name)
+                elif metric.type_params.denominator:  # LEGACY format: plain string
                     refs.append(metric.type_params.denominator)
 
             for ref_name in refs:
@@ -339,6 +397,22 @@ class MetricFlowParser:
                         return result
 
         elif metric.type == 'cumulative':
+            # NEW dbt 1.12.0 format: Check cumulative_type_params.metric.name
+            if (metric.type_params.cumulative_type_params and
+                metric.type_params.cumulative_type_params.get('metric') and
+                metric.type_params.cumulative_type_params['metric'].get('name')):
+
+                input_metric_name = metric.type_params.cumulative_type_params['metric']['name']
+                # Recursively resolve the input metric's semantic model
+                ref_metric = metric_by_name.get(input_metric_name)
+                if ref_metric:
+                    result = self._resolve_sm_for_metric(
+                        ref_metric, measure_to_sm, metric_by_name, _depth + 1
+                    )
+                    if result:
+                        return result
+
+            # LEGACY format: Check measure reference
             base = metric.type_params.measure
             if base and base in measure_to_sm:
                 return measure_to_sm[base].name
@@ -428,11 +502,11 @@ class MetricFlowParser:
             # NEW dbt 1.12.0 format: Get aggregation info from metric_aggregation_params
             if (metric.type_params.metric_aggregation_params and
                 metric.type_params.metric_aggregation_params.get('agg') and
-                metric.type_params.metric_aggregation_params.get('expr')):
+                metric.type_params.expr):  # expr is at type_params level, not inside metric_aggregation_params
 
                 agg_params = metric.type_params.metric_aggregation_params
                 cube_type = _AGG_MAP.get(agg_params['agg'].lower(), 'sum')
-                sql_expr = agg_params['expr']
+                sql_expr = metric.type_params.expr  # Get expr from correct location
 
                 return DbtMetric(
                     name=metric.name,
@@ -479,14 +553,27 @@ class MetricFlowParser:
             )
 
         elif metric.type == 'ratio':
-            num = metric.type_params.numerator
-            den = metric.type_params.denominator
-            if not num or not den:
+            # Extract numerator and denominator names (handle both new object and legacy string formats)
+            num_name = None
+            den_name = None
+
+            if isinstance(metric.type_params.numerator, dict):
+                num_name = metric.type_params.numerator.get('name')
+            else:
+                num_name = metric.type_params.numerator
+
+            if isinstance(metric.type_params.denominator, dict):
+                den_name = metric.type_params.denominator.get('name')
+            else:
+                den_name = metric.type_params.denominator
+
+            if not num_name or not den_name:
                 return None
+
             return DbtMetric(
                 name=metric.name,
                 type='number',
-                sql=f'${{{num}}} / NULLIF(${{{den}}}, 0)',
+                sql=f'${{{num_name}}} / NULLIF(${{{den_name}}}, 0)',
                 title=metric.label or metric.name.replace('_', ' ').title(),
                 description=metric.description,
             )
@@ -495,10 +582,22 @@ class MetricFlowParser:
             # runningTotal in Cube.js generates multi-subquery SQL for every query
             # on the cube, even when unrelated measures are selected. Use `sum`
             # instead — the running-total view is a BI/visualization-layer concern.
+
+            # NEW format: Get input metric from cumulative_type_params.metric.name
+            input_metric_name = None
+            if (metric.type_params.cumulative_type_params and
+                metric.type_params.cumulative_type_params.get('metric') and
+                metric.type_params.cumulative_type_params['metric'].get('name')):
+                input_metric_name = metric.type_params.cumulative_type_params['metric']['name']
+
+            # LEGACY format: Get base measure name
             base_name = metric.type_params.measure
+
+            # Try to find the base measure or use the input metric name
             base = measure_by_name.get(base_name) if base_name else None
             cube_type = _AGG_MAP.get(base.agg.lower(), 'sum') if base else 'sum'
-            sql_expr = (base.expr or base.name) if base else (base_name or metric.name)
+            sql_expr = (base.expr or base.name) if base else (input_metric_name or base_name or metric.name)
+
             return DbtMetric(
                 name=metric.name,
                 type=cube_type,

@@ -66,14 +66,16 @@ class MetricFlowTypeParams(BaseModel):
     # derived
     expr: Optional[str] = None
     metrics: Optional[List[Dict[str, Any]]] = None
-    # ratio
-    numerator: Optional[str] = None
-    denominator: Optional[str] = None
-    # cumulative
+    # ratio - can be string (legacy) or object (new format)
+    numerator: Optional[Any] = None  # str or dict with 'name' field
+    denominator: Optional[Any] = None  # str or dict with 'name' field
+    # cumulative (legacy)
     window: Optional[str] = None
     grain_to_date: Optional[str] = None
     # NEW dbt 1.12.0 format: metric aggregation parameters
     metric_aggregation_params: Optional[Dict[str, Any]] = None
+    # NEW dbt 1.12.0 format: cumulative type parameters
+    cumulative_type_params: Optional[Dict[str, Any]] = None
 
 
 class MetricFlowMetric(BaseModel):
