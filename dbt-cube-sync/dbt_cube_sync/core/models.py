@@ -93,6 +93,7 @@ class DbtColumn(BaseModel):
     data_type: Optional[str] = None
     description: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
+    sql: Optional[str] = None  # overrides name as the SQL column expression (used when logical name ≠ physical column)
 
 
 class DbtMetric(BaseModel):

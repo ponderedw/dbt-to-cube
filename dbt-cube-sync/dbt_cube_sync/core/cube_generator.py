@@ -89,7 +89,7 @@ class CubeGenerator:
         for col_name, col_data in model.columns.items():
             raw_type = col_data.data_type or ''
             cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
-            col_sql = self._safe_sql_expr(col_name, raw_type)
+            col_sql = self._safe_sql_expr(col_data.sql or col_name, raw_type)
 
             label = (col_data.meta or {}).get('label')
             dimension = CubeDimension(

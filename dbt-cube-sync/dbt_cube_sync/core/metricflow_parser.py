@@ -442,11 +442,16 @@ class MetricFlowParser:
         columns: Dict[str, DbtColumn] = {}
 
         for entity in sm.entities:
+            # entity.name is the logical join name (e.g. "product");
+            # entity.expr is the physical column (e.g. "product_id").
+            # The dict key / Cube.js dimension name stays as entity.name;
+            # sql overrides the SQL expression so the generated query uses the real column.
             columns[entity.name] = DbtColumn(
                 name=entity.name,
                 data_type='varchar',
                 description=entity.description or f"{entity.type} key",
                 meta={'label': entity.label or entity.name.replace('_', ' ').title()},
+                sql=entity.expr if entity.expr and entity.expr != entity.name else None,
             )
 
         for dim in sm.dimensions:
@@ -456,6 +461,7 @@ class MetricFlowParser:
                 data_type=data_type,
                 description=dim.description,
                 meta={'label': dim.label or dim.name.replace('_', ' ').title()},
+                sql=dim.expr if dim.expr and dim.expr != dim.name else None,
             )
 
         # Build measures: base measures first, then MetricFlow metrics
