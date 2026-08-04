@@ -599,8 +599,10 @@ class MetricFlowParser:
             # LEGACY format: Get base measure name
             base_name = metric.type_params.measure
 
-            # Try to find the base measure or use the input metric name
+            # Try legacy measure first, then the new-format input metric (virtual measure)
             base = measure_by_name.get(base_name) if base_name else None
+            if not base and input_metric_name:
+                base = measure_by_name.get(input_metric_name)
             cube_type = _AGG_MAP.get(base.agg.lower(), 'sum') if base else 'sum'
             sql_expr = (base.expr or base.name) if base else (input_metric_name or base_name or metric.name)
 
