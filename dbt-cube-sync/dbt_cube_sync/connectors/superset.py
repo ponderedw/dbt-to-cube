@@ -226,29 +226,18 @@ class SupersetConnector(BaseConnector):
     def _parse_dimensions(self, content: str) -> List[Dict[str, Any]]:
         """Extract dimensions from Cube.js file"""
         dimensions = []
-        
-        # Find dimensions block
-        dimensions_match = re.search(
-            r'dimensions:\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*?)\}',
-            content,
-            re.DOTALL
-        )
-        
-        if not dimensions_match:
+
+        dimensions_block = self._extract_block(content, 'dimensions')
+
+        if dimensions_block is None:
             print("  ⚠️  No dimensions block found")
             return dimensions
-        
-        dimensions_block = dimensions_match.group(1)
-        
-        # Parse individual dimensions
-        dimension_pattern = r'(\w+):\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}(?=\s*,|\s*$)'
-        matches = list(re.finditer(dimension_pattern, dimensions_block))
-        
+
+        matches = list(self._iter_named_blocks(dimensions_block))
+
         print(f"  Found {len(matches)} dimensions in Cube.js file")
-        
-        for match in matches:
-            dim_name = match.group(1)
-            dim_content = match.group(2)
+
+        for dim_name, dim_content in matches:
             
             # Extract sql field (actual column name)
             sql_match = re.search(r'sql:\s*`([^`]+)`', dim_content)
@@ -294,28 +283,19 @@ class SupersetConnector(BaseConnector):
         """
         measures = []
 
-        # Find measures block
-        measures_match = re.search(
-            r'measures:\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*?)\}',
-            content,
-            re.DOTALL
-        )
+        # Find measures block using brace-counting (handles ${CUBE} template refs)
+        measures_block = self._extract_block(content, 'measures')
 
-        if not measures_match:
+        if measures_block is None:
             print("  ⚠️  No measures block found")
             return measures
 
-        measures_block = measures_match.group(1)
-
-        # Parse individual measures
-        measure_pattern = r'(\w+):\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}(?=\s*,|\s*$)'
-        matches = list(re.finditer(measure_pattern, measures_block))
+        # Parse individual measures using the same brace-counting approach
+        matches = list(self._iter_named_blocks(measures_block))
 
         print(f"  Found {len(matches)} measures in Cube.js file")
 
-        for match in matches:
-            measure_name = match.group(1)
-            measure_content = match.group(2)
+        for measure_name, measure_content in matches:
 
             # Extract type, sql, title, description
             type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', measure_content)
@@ -349,6 +329,77 @@ class SupersetConnector(BaseConnector):
 
         return measures
     
+    def _extract_block(self, content: str, key: str):
+        """Return the inner content of `key: { ... }` using brace-counting.
+
+        Skips `${...}` template references so they don't confuse the counter.
+        Returns None if the key is not found.
+        """
+        marker = f'{key}:'
+        start = content.find(marker)
+        if start == -1:
+            return None
+        brace_start = content.find('{', start + len(marker))
+        if brace_start == -1:
+            return None
+        depth = 0
+        i = brace_start
+        while i < len(content):
+            ch = content[i]
+            if ch == '$' and i + 1 < len(content) and content[i + 1] == '{':
+                # skip ${...} template reference
+                end = content.find('}', i + 2)
+                i = end + 1 if end != -1 else len(content)
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return content[brace_start + 1:i]
+            i += 1
+        return None
+
+    def _iter_named_blocks(self, content: str):
+        """Yield (name, inner_content) for each `name: { ... }` entry.
+
+        Uses brace-counting so `${CUBE}` inside values doesn't break parsing.
+        """
+        i = 0
+        name_re = re.compile(r'\b(\w+)\s*:', re.MULTILINE)
+        while i < len(content):
+            m = name_re.search(content, i)
+            if not m:
+                break
+            name = m.group(1)
+            brace_pos = content.find('{', m.end())
+            if brace_pos == -1:
+                break
+            # make sure nothing but whitespace/comments between ':' and '{'
+            between = content[m.end():brace_pos]
+            if between.strip() and not between.strip().startswith('//'):
+                i = m.end()
+                continue
+            depth = 0
+            j = brace_pos
+            while j < len(content):
+                ch = content[j]
+                if ch == '$' and j + 1 < len(content) and content[j + 1] == '{':
+                    end = content.find('}', j + 2)
+                    j = end + 1 if end != -1 else len(content)
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        yield name, content[brace_pos + 1:j]
+                        i = j + 1
+                        break
+                j += 1
+            else:
+                break
+
     def _map_cube_type_to_superset(self, cube_type: str) -> str:
         """Map Cube.js types to Superset/SQL types"""
         type_mapping = {

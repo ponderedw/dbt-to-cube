@@ -428,6 +428,7 @@ class MetricFlowParser:
                 sm_metrics.get(sm.name, []),
                 primary_entity_index,
                 foreign_entity_index,
+                metric_to_sm_name=metric_to_sm_name,
             )
             if dbt_model:
                 dbt_models.append(dbt_model)
@@ -523,6 +524,7 @@ class MetricFlowParser:
         assigned_metrics: List[MetricFlowMetric],
         primary_entity_index: Optional[Dict[str, List[tuple]]] = None,
         foreign_entity_index: Optional[Dict[str, List[tuple]]] = None,
+        metric_to_sm_name: Optional[Dict[str, str]] = None,
     ) -> Optional[DbtModel]:
         """Convert one MetricFlowSemanticModel (+ its assigned metrics) to a DbtModel."""
 
@@ -587,7 +589,11 @@ class MetricFlowParser:
             )
 
         for metric in assigned_metrics:
-            dbt_metric = self._convert_metric(metric, sm.measures)
+            dbt_metric = self._convert_metric(
+                metric, sm.measures,
+                metric_to_sm_name=metric_to_sm_name,
+                current_sm_name=sm.name,
+            )
             if dbt_metric:
                 # Always override: for dbt v2, the metric carries label/format/filter
                 # that virtual measures lack. For legacy format, metric names differ
@@ -659,6 +665,8 @@ class MetricFlowParser:
         self,
         metric: MetricFlowMetric,
         sm_measures: List[MetricFlowMeasure],
+        metric_to_sm_name: Optional[Dict[str, str]] = None,
+        current_sm_name: Optional[str] = None,
     ) -> Optional[DbtMetric]:
         """Convert a MetricFlowMetric to a DbtMetric for inclusion in a cube."""
         measure_by_name = {m.name: m for m in sm_measures}
@@ -714,12 +722,19 @@ class MetricFlowParser:
             expr = metric.type_params.expr or ''
             for ref in (metric.type_params.metrics or []):
                 ref_name = ref.get('name', '')
-                if ref_name:
-                    expr = re.sub(
-                        rf'\b{re.escape(ref_name)}\b',
-                        f'${{{ref_name}}}',
-                        expr,
-                    )
+                if not ref_name:
+                    continue
+                # Qualify cross-SM references as ${CubeName.measure_name}
+                ref_sm = (metric_to_sm_name or {}).get(ref_name)
+                if ref_sm and current_sm_name and ref_sm != current_sm_name:
+                    cube_ref = f'${{{self._to_pascal_case(ref_sm)}.{ref_name}}}'
+                else:
+                    cube_ref = f'${{{ref_name}}}'
+                expr = re.sub(
+                    rf'\b{re.escape(ref_name)}\b',
+                    cube_ref,
+                    expr,
+                )
             return DbtMetric(
                 name=metric.name,
                 type='number',
