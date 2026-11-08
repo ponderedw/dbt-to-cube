@@ -4,7 +4,16 @@ semantic_models:
 
   - name: semantic_course_performance
     model: ref('course_performance_summary')
-    primary_entity: course_id
+    entities:
+      - name: course_id
+        type: primary
+        expr: course_id
+        label: "Course ID"
+      # unique entity with same name as semantic_semester_enrollment's primary → one_to_one join
+      - name: semester_id
+        type: unique
+        expr: semester_id
+        label: "Semester ID"
     config:
       meta:
         pre_aggregations:
@@ -95,7 +104,16 @@ semantic_models:
 
   - name: semantic_semester_enrollment
     model: ref('semester_enrollment_trends')
-    primary_entity: semester_id
+    entities:
+      - name: semester_id
+        type: primary
+        expr: semester_id
+        label: "Semester ID"
+      # foreign entity shared with semantic_student_attendance → many_to_many join
+      - name: school_id
+        type: foreign
+        expr: school_id
+        label: "School ID"
     config:
       meta:
         pre_aggregations:
@@ -190,6 +208,128 @@ semantic_models:
         expr: probation_students
         agg_time_dimension: start_date
 
+  # ── Attendance semantic model ──────────────────────────────────────────
+  # Demonstrates: filters on measures, format, and foreign-key joins
+  - name: semantic_student_attendance
+    model: ref('student_attendance')
+    description: "Student attendance data aggregated by student, section, and semester."
+    config:
+      meta:
+        pre_aggregations:
+          attendance_by_school_semester:
+            type: rollup
+            measures:
+              - total_days_enrolled
+              - avg_attendance_rate
+              - tardy_days
+              - absent_days
+            dimensions:
+              - school_name
+              - gradespan
+              - semester_name
+              - academic_year
+              - is_odp_student
+            refresh_key:
+              every: "1 day"
+
+    entities:
+      - name: student_id
+        type: primary
+        description: "Unique student identifier"
+        label: "Student ID"
+
+      # Foreign keys that generate Cube.js joins
+      # course_id matches semantic_course_performance's primary entity → generates join
+      - name: course_id
+        type: foreign
+        expr: section_id
+        description: "Links each attendance record to its course (joins to SemanticCoursePerformance)"
+        label: "Course ID"
+
+      - name: school_id
+        type: foreign
+        description: "Links each attendance record to its school"
+        label: "School ID"
+
+    dimensions:
+      - name: academic_year
+        type: categorical
+        label: "Academic Year"
+        description: "Academic year (e.g. 2024-2025)."
+
+      - name: semester_name
+        type: categorical
+        label: "Semester"
+        description: "Semester name (e.g. Fall 2024)."
+
+      - name: semester_type
+        type: categorical
+        label: "Semester Type"
+        description: "Season: Fall, Spring, or Summer."
+
+      - name: school_name
+        type: categorical
+        label: "School"
+        description: "Full name of the school."
+
+      - name: gradespan
+        type: categorical
+        label: "Gradespan"
+        description: "Grade span of the school (e.g. K-8, 9-12)."
+
+      - name: is_odp_student
+        type: categorical
+        label: "ODP Student"
+        description: "1 if the student is in an out-of-district placement."
+
+      - name: semester_status
+        type: categorical
+        label: "Semester Status"
+        description: "Current status: Active, Completed, or Upcoming."
+
+      - name: semester_start_date
+        type: time
+        label: "Semester Start Date"
+        description: "Date the semester began; aggregation time dimension."
+        type_params:
+          time_granularity: day
+
+    measures:
+      # Feature: measure-level filter via CASE WHEN — the standard MetricFlow pattern.
+      # This mirrors the PSDW production approach (e.g. cw_assignments_count uses
+      # "case when bucket = 'CW' then assignment_count else null end").
+      # Cube.js filters: [] are generated at the metric level (see metrics: section).
+      - name: tardy_days
+        label: "Tardy Days (non-ODP)"
+        description: >
+          Total tardy days for non-ODP students. All reporting should exclude
+          out-of-district placement (ODP) students.
+        agg: sum
+        expr: "case when is_odp_student = 0 then days_tardy else null end"
+        agg_time_dimension: semester_start_date
+
+      # format belongs on the top-level metric (school_attendance_rate below), not the measure
+      - name: avg_attendance_rate
+        label: "Avg Attendance Rate"
+        description: "Average daily attendance rate (days present / days enrolled), 0–1 scale."
+        agg: average
+        expr: attendance_rate
+        agg_time_dimension: semester_start_date
+
+      - name: total_days_enrolled
+        label: "Total Days Enrolled"
+        description: "Total enrolled school days across all students."
+        agg: sum
+        expr: days_enrolled
+        agg_time_dimension: semester_start_date
+
+      - name: absent_days
+        label: "Absent Days"
+        description: "Total absent days across all students."
+        agg: sum
+        expr: days_absent
+        agg_time_dimension: semester_start_date
+
 
 metrics:
 
@@ -213,6 +353,8 @@ metrics:
     type: simple
     type_params:
       measure: avg_pass_rate
+    meta:
+      format: "percent"
 
   - name: average_engagement_score
     label: "Average Engagement Score"
@@ -280,6 +422,8 @@ metrics:
     type_params:
       numerator: total_deans_list
       denominator: total_semester_headcount
+    meta:
+      format: "percent"
 
   - name: academic_risk_ratio
     label: "Academic Risk Ratio"
@@ -288,6 +432,8 @@ metrics:
     type_params:
       numerator: total_on_probation
       denominator: total_semester_headcount
+    meta:
+      format: "percent"
 
   - name: courses_per_student
     label: "Courses per Student"
@@ -298,3 +444,72 @@ metrics:
       metrics:
         - name: total_semester_courses
         - name: total_semester_headcount
+
+  # Feature: metric-level filter using plain SQL (Cube.js ${CUBE}.col syntax).
+  # dbt renders {{ }} as Jinja2, so use ${CUBE}.col or plain SQL here.
+  # The converter passes this straight through to Cube.js filters: [{ sql: `...` }].
+  - name: active_semester_headcount
+    label: "Active Semester Headcount"
+    description: "Distinct students enrolled in semesters that are currently Active."
+    type: simple
+    type_params:
+      measure: total_unique_students
+    meta:
+      filter: "${CUBE}.semester_status = 'Active'"
+
+  # Feature: advanced (derived) metric with format
+  - name: gpa_improvement_target
+    label: "GPA Improvement Target"
+    description: "GPA gap between Dean's List threshold (3.5) and average semester GPA, as a percentage."
+    type: derived
+    type_params:
+      expr: (3.5 - average_semester_gpa) / 3.5 * 100
+      metrics:
+        - name: average_semester_gpa
+    meta:
+      format: "percent"
+
+  # ── Attendance metrics (from semantic_student_attendance) ─────────────
+
+  - name: total_tardy_days
+    label: "Total Tardy Days"
+    description: "Sum of tardy days for non-ODP students."
+    type: simple
+    type_params:
+      measure: tardy_days
+
+  - name: school_attendance_rate
+    label: "School Attendance Rate"
+    description: "Average daily attendance rate across all students."
+    type: simple
+    type_params:
+      measure: avg_attendance_rate
+    meta:
+      format: "percent"
+
+  - name: total_absent_days
+    label: "Total Absent Days"
+    description: "Sum of absent days across all students."
+    type: simple
+    type_params:
+      measure: absent_days
+
+  - name: total_enrolled_days
+    label: "Total Enrolled Days"
+    description: "Total enrolled school days across all students."
+    type: simple
+    type_params:
+      measure: total_days_enrolled
+
+  # Feature: ratio metric with format — classic chronic absenteeism KPI
+  - name: chronic_absence_rate
+    label: "Chronic Absence Rate"
+    description: >
+      Ratio of absent days to enrolled days across all students — a key
+      indicator for chronic absenteeism tracking.
+    type: ratio
+    type_params:
+      numerator: total_absent_days
+      denominator: total_enrolled_days
+    meta:
+      format: "percent"

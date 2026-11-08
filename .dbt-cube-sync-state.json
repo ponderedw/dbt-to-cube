@@ -1,32 +1,23 @@
 {
-  "version": "1.1",
-  "last_sync_timestamp": "2026-05-20T11:45:14.585744Z",
-  "manifest_path": "/workspace/DbtEducationalDataProject/target/manifest.json",
+  "version": "1.0",
+  "last_sync_timestamp": "2026-11-08T15:31:25.899357Z",
+  "manifest_path": "DbtEducationalDataProject/target/manifest.json",
   "models": {
     "model.DbtEducationalDataProject.course_performance_summary": {
-      "checksum": "90478c7eaeb57363f140dbb3c4ed30c2ac5836cdb2c66ab6b94cb06a6cfca5b2",
+      "checksum": "7a01a22fe053c2e50721a419df53418cb0a5eafb8b0ba993f771158512030d8b",
       "has_metrics": true,
-      "last_generated": "2026-05-17T13:32:21.649172Z",
-      "output_file": "/workspace/cube_output/CoursePerformanceSummary.js",
-      "output_checksum": "c12a33469bec618355300337bcba89fdcf6c0e62c9f027d168fbb2755eb952c0",
+      "last_generated": "2026-11-08T15:31:25.899357Z",
+      "output_file": "cube_output/CoursePerformanceSummary.js",
+      "output_checksum": "71b1c929184247cd72f3dff8ba006095e4f57ab3bd1b95bd5fd8d989e5624087",
       "superset_sync_status": null,
       "rag_sync_status": null
     },
-    "semantic_model.semantic_course_performance.semantic_course_performance": {
-      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
-      "has_metrics": false,
-      "last_generated": "2026-05-20T11:45:14.585744Z",
-      "output_file": "/workspace/cube_output/SemanticCoursePerformance.js",
-      "output_checksum": "ac7ac28233f44866cc0e284b671fa3de6e82ae79176746189f803fde780d0920",
-      "superset_sync_status": null,
-      "rag_sync_status": null
-    },
-    "semantic_model.semantic_semester_enrollment.semantic_semester_enrollment": {
-      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
-      "has_metrics": false,
-      "last_generated": "2026-05-20T11:45:14.585744Z",
-      "output_file": "/workspace/cube_output/SemanticSemesterEnrollment.js",
-      "output_checksum": "c2edadaeaef13db369cab61fe72c7f415f966e474dd32d934fd6bd6bc05aa37b",
+    "model.DbtEducationalDataProject.student_attendance": {
+      "checksum": "e6d065f273b6695b2b953cb944678146f49b16509efab70e14dd6bfcb1338fb4",
+      "has_metrics": true,
+      "last_generated": "2026-11-08T15:31:25.899357Z",
+      "output_file": "cube_output/StudentAttendance.js",
+      "output_checksum": "e61ec5f5f89887df28a09fddd50b2637dbb0442195b50ab777a4edabf01b8186",
       "superset_sync_status": null,
       "rag_sync_status": null
     }

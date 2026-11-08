@@ -25,6 +25,7 @@ from .models import (
     MetricFlowMeasure,
     MetricFlowMetric,
     MetricFlowTypeParams,
+    CubeJoin,
 )
 
 # MetricFlow agg → Cube.js measure type
@@ -44,6 +45,40 @@ _DIM_TYPE_MAP: Dict[str, str] = {
     'time': 'timestamp',
     'categorical': 'varchar',
 }
+
+
+def _convert_mf_filter_to_cube(filter_str: str) -> str:
+    """Convert a MetricFlow where-filter expression to a Cube.js SQL fragment.
+
+    MetricFlow syntax         → Cube.js SQL
+    {{ Dimension('x') }}      → ${CUBE}.x
+    {{ TimeDimension('x', …) }}  → ${CUBE}.x
+    {{ Metric('x') }}         → ${x}
+    """
+    if not filter_str:
+        return filter_str
+    result = re.sub(r"\{\{\s*Dimension\(['\"](\w+)['\"]\)\s*\}\}", r"${CUBE}.\1", filter_str)
+    result = re.sub(r"\{\{\s*TimeDimension\(['\"](\w+)['\"].*?\)\s*\}\}", r"${CUBE}.\1", result)
+    result = re.sub(r"\{\{\s*Metric\(['\"](\w+)['\"]\)\s*\}\}", r"${\1}", result)
+    return result.strip()
+
+
+def _map_dbt_format(format_str: Optional[str]) -> Optional[str]:
+    """Map a dbt/MetricFlow format hint to a Cube.js format string.
+
+    Cube.js built-in values: 'percent', 'currency', 'number'.
+    Other strings are passed through for custom renderers.
+    """
+    if not format_str:
+        return None
+    fmt = format_str.strip()
+    fmt_lower = fmt.lower()
+    if fmt_lower == 'percent' or '%' in fmt:
+        return 'percent'
+    if fmt_lower == 'currency' or fmt.startswith('$'):
+        return 'currency'
+    # Pass other strings through (e.g. "0.00" for downstream BI)
+    return fmt or None
 
 
 def _extract_ref_name(model_ref: str) -> str:
@@ -257,6 +292,9 @@ class MetricFlowParser:
         for m in raw or []:
             if not isinstance(m, dict):
                 continue
+            meta = m.get('meta') or {}
+            # filter can live at top level OR in meta (to bypass dbt's Jinja2 rendering)
+            filter_val = m.get('filter') or meta.get('filter')
             out.append(MetricFlowMeasure(
                 name=m['name'],
                 agg=m.get('agg', 'sum'),
@@ -264,6 +302,8 @@ class MetricFlowParser:
                 description=m.get('description'),
                 label=m.get('label'),
                 agg_time_dimension=m.get('agg_time_dimension'),
+                filter=filter_val,
+                format=m.get('format') or meta.get('format'),
             ))
         return out
 
@@ -289,12 +329,20 @@ class MetricFlowParser:
                 # NEW dbt 1.12.0 format: include cumulative_type_params
                 cumulative_type_params=tp_raw.get('cumulative_type_params'),
             )
+            # dbt 1.12 moved meta from top-level to config.meta on metrics.
+            # Support both locations for backward compatibility.
+            meta = data.get('meta') or {}
+            config_meta = (data.get('config') or {}).get('meta') or {}
+            # filter can live at top level (manifest-compiled value) or in meta
+            filter_val = data.get('filter') or meta.get('filter') or config_meta.get('filter')
             return MetricFlowMetric(
                 name=data['name'],
                 label=data.get('label'),
                 description=data.get('description'),
                 type=data.get('type', 'simple'),
                 type_params=tp,
+                filter=filter_val,
+                format=data.get('format') or meta.get('format') or config_meta.get('format'),
             )
         except Exception as exc:
             print(f"  Warning: skipping metric '{data.get('name', '?')}': {exc}")
@@ -332,10 +380,37 @@ class MetricFlowParser:
             if target and target in sm_metrics:
                 sm_metrics[target].append(metric)
 
-        # Convert each semantic model
+        # Build cross-SM join indexes from entity relationships.
+        # Cardinality is derived from the entity types on each side:
+        #   my foreign  → their primary  : many_to_one
+        #   my primary  → their primary  : one_to_one
+        #   my foreign  → their foreign  : many_to_many
+        primary_entity_index: Dict[str, List[tuple]] = {}
+        foreign_entity_index: Dict[str, List[tuple]] = {}
+        for sm in semantic_models:
+            for entity in sm.entities:
+                if entity.type in ('primary', 'unique'):
+                    if entity.name not in primary_entity_index:
+                        primary_entity_index[entity.name] = []
+                    primary_entity_index[entity.name].append(
+                        (sm.name, entity.expr or entity.name)
+                    )
+                elif entity.type == 'foreign':
+                    if entity.name not in foreign_entity_index:
+                        foreign_entity_index[entity.name] = []
+                    foreign_entity_index[entity.name].append(
+                        (sm.name, entity.expr or entity.name)
+                    )
+
+        # Convert each semantic model and attach joins
         dbt_models: List[DbtModel] = []
         for sm in semantic_models:
-            dbt_model = self._sm_to_dbt_model(sm, sm_metrics.get(sm.name, []))
+            dbt_model = self._sm_to_dbt_model(
+                sm,
+                sm_metrics.get(sm.name, []),
+                primary_entity_index,
+                foreign_entity_index,
+            )
             if dbt_model:
                 dbt_models.append(dbt_model)
 
@@ -419,10 +494,17 @@ class MetricFlowParser:
 
         return None
 
+    @staticmethod
+    def _to_pascal_case(text: str) -> str:
+        words = re.sub(r'[^a-zA-Z0-9]', ' ', text).split()
+        return ''.join(w.capitalize() for w in words if w)
+
     def _sm_to_dbt_model(
         self,
         sm: MetricFlowSemanticModel,
         assigned_metrics: List[MetricFlowMetric],
+        primary_entity_index: Optional[Dict[str, List[tuple]]] = None,
+        foreign_entity_index: Optional[Dict[str, List[tuple]]] = None,
     ) -> Optional[DbtModel]:
         """Convert one MetricFlowSemanticModel (+ its assigned metrics) to a DbtModel."""
 
@@ -446,11 +528,15 @@ class MetricFlowParser:
             # entity.expr is the physical column (e.g. "product_id").
             # The dict key / Cube.js dimension name stays as entity.name;
             # sql overrides the SQL expression so the generated query uses the real column.
+            is_pk = entity.type in ('primary', 'unique')
             columns[entity.name] = DbtColumn(
                 name=entity.name,
                 data_type='varchar',
                 description=entity.description or f"{entity.type} key",
-                meta={'label': entity.label or entity.name.replace('_', ' ').title()},
+                meta={
+                    'label': entity.label or entity.name.replace('_', ' ').title(),
+                    'primary-key': is_pk,
+                },
                 sql=entity.expr if entity.expr and entity.expr != entity.name else None,
             )
 
@@ -469,21 +555,75 @@ class MetricFlowParser:
 
         for measure in sm.measures:
             cube_type = _AGG_MAP.get(measure.agg.lower(), 'sum')
+            m_filters = None
+            if measure.filter:
+                m_filters = [_convert_mf_filter_to_cube(measure.filter)]
             metrics[measure.name] = DbtMetric(
                 name=measure.name,
                 type=cube_type,
                 sql=measure.expr or measure.name,
                 title=measure.label or measure.name.replace('_', ' ').title(),
                 description=measure.description,
+                format=_map_dbt_format(measure.format),
+                filters=m_filters,
             )
 
         for metric in assigned_metrics:
             dbt_metric = self._convert_metric(metric, sm.measures)
-            if dbt_metric and dbt_metric.name not in metrics:
+            if dbt_metric:
+                # Always override: for dbt v2, the metric carries label/format/filter
+                # that virtual measures lack. For legacy format, metric names differ
+                # from measure names so overriding is safe.
                 metrics[dbt_metric.name] = dbt_metric
 
         if not metrics:
             return None
+
+        # Build Cube.js joins from entity relationships.
+        # Cardinality is derived from entity types on each side:
+        #   my foreign → their primary  : many_to_one  (Cube.js belongs_to)
+        #   my primary → their primary  : one_to_one   (Cube.js has_one)
+        #   my foreign → their foreign  : many_to_many — NOT supported by Cube.js; skipped
+        #
+        # For one_to_one both SMs see each other in the index and would each create
+        # a join, forming a circular reference. Break the tie: only the SM whose name
+        # is alphabetically first defines the join.
+        joins: List[CubeJoin] = []
+        my_cube_name = self._to_pascal_case(sm.name)
+        seen_joins: set = set()
+
+        def _add_joins(my_entity, targets, relationship: str) -> None:
+            my_col = my_entity.expr or my_entity.name
+            for target_sm_name, target_expr in targets:
+                if target_sm_name == sm.name:
+                    continue
+                # Avoid circular A→B / B→A for one_to_one: only the alphabetically
+                # first SM defines the join.
+                if relationship == 'one_to_one' and sm.name > target_sm_name:
+                    continue
+                target_cube = self._to_pascal_case(target_sm_name)
+                key = (target_cube, my_col, target_expr)
+                if key in seen_joins:
+                    continue
+                seen_joins.add(key)
+                join_sql = (
+                    f"${{{my_cube_name}}}.{my_col} = "
+                    f"${{{target_cube}}}.{target_expr}"
+                )
+                joins.append(CubeJoin(
+                    name=target_cube,
+                    sql=join_sql,
+                    relationship=relationship,
+                ))
+
+        for entity in sm.entities:
+            if entity.type == 'foreign':
+                if primary_entity_index:
+                    _add_joins(entity, primary_entity_index.get(entity.name, []), 'many_to_one')
+                # many_to_many (foreign → foreign) is not supported in Cube.js; skipped
+            elif entity.type in ('primary', 'unique'):
+                if primary_entity_index:
+                    _add_joins(entity, primary_entity_index.get(entity.name, []), 'one_to_one')
 
         return DbtModel(
             name=sm.name,
@@ -494,6 +634,7 @@ class MetricFlowParser:
             columns=columns,
             metrics=metrics,
             pre_aggregations=self._parse_pre_aggregations(sm.pre_aggregations),
+            joins=joins,
         )
 
     def _convert_metric(
@@ -504,22 +645,32 @@ class MetricFlowParser:
         """Convert a MetricFlowMetric to a DbtMetric for inclusion in a cube."""
         measure_by_name = {m.name: m for m in sm_measures}
 
+        # Build common fields
+        # dbt v2 auto-populates label = metric.name when no explicit label is set.
+        # Treat that as "no label" so we fall through to the auto-title-case.
+        explicit_label = metric.label if metric.label and metric.label != metric.name else None
+        title = explicit_label or metric.name.replace('_', ' ').title()
+        fmt = _map_dbt_format(metric.format)
+        cube_filters = [_convert_mf_filter_to_cube(metric.filter)] if metric.filter else None
+
         if metric.type == 'simple':
             # NEW dbt 1.12.0 format: Get aggregation info from metric_aggregation_params
             if (metric.type_params.metric_aggregation_params and
                 metric.type_params.metric_aggregation_params.get('agg') and
-                metric.type_params.expr):  # expr is at type_params level, not inside metric_aggregation_params
+                metric.type_params.expr):
 
                 agg_params = metric.type_params.metric_aggregation_params
                 cube_type = _AGG_MAP.get(agg_params['agg'].lower(), 'sum')
-                sql_expr = metric.type_params.expr  # Get expr from correct location
+                sql_expr = metric.type_params.expr
 
                 return DbtMetric(
                     name=metric.name,
                     type=cube_type,
                     sql=sql_expr,
-                    title=metric.label or metric.name.replace('_', ' ').title(),
+                    title=title,
                     description=metric.description,
+                    format=fmt,
+                    filters=cube_filters,
                 )
 
             # LEGACY format: Look for measure reference
@@ -535,13 +686,14 @@ class MetricFlowParser:
                 name=metric.name,
                 type=cube_type,
                 sql=sql_expr,
-                title=metric.label or metric.name.replace('_', ' ').title(),
+                title=title,
                 description=metric.description,
+                format=fmt,
+                filters=cube_filters,
             )
 
         elif metric.type == 'derived':
             expr = metric.type_params.expr or ''
-            # Wrap referenced metric names with ${...} for Cube.js
             for ref in (metric.type_params.metrics or []):
                 ref_name = ref.get('name', '')
                 if ref_name:
@@ -554,12 +706,13 @@ class MetricFlowParser:
                 name=metric.name,
                 type='number',
                 sql=expr,
-                title=metric.label or metric.name.replace('_', ' ').title(),
+                title=title,
                 description=metric.description,
+                format=fmt,
+                filters=cube_filters,
             )
 
         elif metric.type == 'ratio':
-            # Extract numerator and denominator names (handle both new object and legacy string formats)
             num_name = None
             den_name = None
 
@@ -580,8 +733,10 @@ class MetricFlowParser:
                 name=metric.name,
                 type='number',
                 sql=f'${{{num_name}}} / NULLIF(${{{den_name}}}, 0)',
-                title=metric.label or metric.name.replace('_', ' ').title(),
+                title=title,
                 description=metric.description,
+                format=fmt,
+                filters=cube_filters,
             )
 
         elif metric.type == 'cumulative':
@@ -589,17 +744,13 @@ class MetricFlowParser:
             # on the cube, even when unrelated measures are selected. Use `sum`
             # instead — the running-total view is a BI/visualization-layer concern.
 
-            # NEW format: Get input metric from cumulative_type_params.metric.name
             input_metric_name = None
             if (metric.type_params.cumulative_type_params and
                 metric.type_params.cumulative_type_params.get('metric') and
                 metric.type_params.cumulative_type_params['metric'].get('name')):
                 input_metric_name = metric.type_params.cumulative_type_params['metric']['name']
 
-            # LEGACY format: Get base measure name
             base_name = metric.type_params.measure
-
-            # Try legacy measure first, then the new-format input metric (virtual measure)
             base = measure_by_name.get(base_name) if base_name else None
             if not base and input_metric_name:
                 base = measure_by_name.get(input_metric_name)
@@ -610,8 +761,10 @@ class MetricFlowParser:
                 name=metric.name,
                 type=cube_type,
                 sql=sql_expr,
-                title=metric.label or metric.name.replace('_', ' ').title(),
+                title=title,
                 description=metric.description,
+                format=fmt,
+                filters=cube_filters,
             )
 
         return None

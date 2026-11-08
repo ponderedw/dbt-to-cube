@@ -1,8 +1,9 @@
 {{ config(materialized='table') }}
 
 WITH course_metrics AS (
-    SELECT 
+    SELECT
         c.course_id,
+        s.semester_id,
         c.course_code,
         c.course_name,
         c.credits,
@@ -35,7 +36,7 @@ WITH course_metrics AS (
     
     WHERE e.grade_points IS NOT NULL
     GROUP BY 
-        c.course_id, c.course_code, c.course_name, c.credits, c.difficulty_level,
+        c.course_id, s.semester_id, c.course_code, c.course_name, c.credits, c.difficulty_level,
         d.department_name, s.semester_name, s.academic_year, s.start_date, s.end_date,
         f.first_name, f.last_name, f.position
 ),

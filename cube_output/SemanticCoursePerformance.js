@@ -1,7 +1,30 @@
 cube(`SemanticCoursePerformance`, {
   sql: `SELECT * FROM public.course_performance_summary`,
-  
+
+  joins: {
+    SemanticSemesterEnrollment: {
+      sql: `${SemanticCoursePerformance}.semester_id = ${SemanticSemesterEnrollment}.semester_id`,
+      relationship: `one_to_one`
+    }
+  },
+
   dimensions: {
+    course_id: {
+      sql: `course_id`,
+      type: `string`,
+      title: `Course ID`,
+      primaryKey: true,
+      description: `primary key`
+    },
+
+    semester_id: {
+      sql: `semester_id`,
+      type: `string`,
+      title: `Semester ID`,
+      primaryKey: true,
+      description: `unique key`
+    },
+
     course_code: {
       sql: `course_code`,
       type: `string`,
@@ -58,7 +81,7 @@ cube(`SemanticCoursePerformance`, {
       description: `Date the semester began; used as the aggregation time dimension.`
     }
   },
-  
+
   measures: {
     course_enrollment_count: {
       type: `sum`,
@@ -88,11 +111,11 @@ cube(`SemanticCoursePerformance`, {
       description: `Average composite engagement score (60% attendance + 40% GPA component).`
     },
 
-    gpa_pass_quality_index: {
-      type: `number`,
-      sql: `${average_course_gpa} * ${average_pass_rate} / 100`,
-      title: `GPA–Pass Quality Index`,
-      description: `Composite quality score: GPA normalised to 0-100 multiplied by pass rate, divided by 100.`
+    total_course_enrollments: {
+      type: `sum`,
+      sql: `total_enrollments`,
+      title: `Total Course Enrollments`,
+      description: `Total number of student enrolments across all course offerings.`
     },
 
     average_course_gpa: {
@@ -102,18 +125,19 @@ cube(`SemanticCoursePerformance`, {
       description: `Mean grade point average across all course offerings.`
     },
 
+    average_pass_rate: {
+      type: `avg`,
+      sql: `pass_rate_percentage`,
+      title: `Average Pass Rate`,
+      description: `Mean pass-rate percentage across all course offerings.`,
+      format: `percent`
+    },
+
     average_engagement_score: {
       type: `avg`,
       sql: `(avg_attendance * 0.6 + avg_grade_points * 25)`,
       title: `Average Engagement Score`,
       description: `Mean composite engagement score across course offerings.`
-    },
-
-    average_pass_rate: {
-      type: `avg`,
-      sql: `pass_rate_percentage`,
-      title: `Average Pass Rate`,
-      description: `Mean pass-rate percentage across all course offerings.`
     },
 
     cumulative_enrollments: {
@@ -123,14 +147,14 @@ cube(`SemanticCoursePerformance`, {
       description: `Running total of course enrolments over time.`
     },
 
-    total_course_enrollments: {
-      type: `sum`,
-      sql: `total_enrollments`,
-      title: `Total Course Enrollments`,
-      description: `Total number of student enrolments across all course offerings.`
+    gpa_pass_quality_index: {
+      type: `number`,
+      sql: `${average_course_gpa} * ${average_pass_rate} / 100`,
+      title: `GPA–Pass Quality Index`,
+      description: `Composite quality score: GPA normalised to 0-100 multiplied by pass rate, divided by 100.`
     }
   },
-  
+
   pre_aggregations: {
     course_by_department_monthly: {
       type: `rollup`,

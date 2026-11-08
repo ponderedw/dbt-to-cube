@@ -12,6 +12,11 @@ A complete data stack solution that transforms dbt models into Cube.js semantic 
 - **⚙️ CLI Tools**: Easy-to-use command-line interface for manual and automated workflows
 - **🔌 Extensible**: Plugin architecture for adding new BI tools
 - **📈 Production Ready**: Automated metrics creation, column metadata, and error handling
+- **🧠 MetricFlow Semantic Layer**: Full support for dbt MetricFlow (v1 and v2 Fusion format)
+- **🔗 Cube.js Joins**: Auto-generated from dbt foreign-key entities
+- **🏷️ Labels & Titles**: `label:` on metrics and dimensions flows to Cube.js `title:`
+- **🎨 Number Formatting**: `config.meta.format: "percent"` → Cube.js `format: 'percent'`
+- **🔍 Metric Filters**: `config.meta.filter: "${CUBE}.col = val"` → Cube.js `filters: [...]`
 
 ## 🏗️ Architecture
 
@@ -108,6 +113,179 @@ docker-compose exec dbt-cube-sync dbt-cube-sync cube-to-bi superset \
   -n admin \
   -p admin \
   -d Cube
+```
+
+## 🧠 MetricFlow Semantic Layer
+
+The converter supports **both** dbt MetricFlow input formats:
+
+### Format 1: Legacy (top-level `semantic_models:` + `metrics:`)
+Used by dbt 1.0–1.11 and still valid in 1.12. Semantic models and metrics live in separate top-level YAML keys.
+
+```yaml
+# models/semantic_models.yml
+semantic_models:
+  - name: orders
+    model: ref('orders')
+    entities:
+      - name: order_id
+        type: primary
+    dimensions:
+      - name: country
+        type: categorical
+    measures:
+      - name: order_count
+        agg: count
+        expr: order_id
+        agg_time_dimension: order_date
+
+metrics:
+  - name: total_orders
+    type: simple
+    type_params:
+      measure: order_count
+```
+
+### Format 2: v2 Fusion (inline in model YAML, dbt 1.12+)
+Semantic model, entities, dimensions, and metrics all live inside the model definition.
+
+```yaml
+# models/orders/schema.yml
+models:
+  - name: orders
+    semantic_model:
+      enabled: true
+    agg_time_dimension: order_date
+
+    columns:
+      - name: order_id
+        entity:
+          type: primary
+          name: order
+      - name: order_date
+        granularity: day
+        dimension:
+          type: time
+      - name: country
+        dimension:
+          type: categorical
+
+    metrics:
+      - name: total_orders
+        label: "Total Orders"
+        description: "Count of all orders"
+        type: simple
+        agg: count
+        expr: 1
+
+      # Metric-level filter — use ${CUBE}.col syntax (not {{ Dimension() }},
+      # which triggers dbt Jinja2 rendering at parse time)
+      - name: us_orders
+        label: "US Orders"
+        type: simple
+        agg: count
+        expr: 1
+        config:
+          meta:
+            filter: "${CUBE}.country = 'US'"
+
+# Top-level advanced metrics (ratio, derived, cumulative)
+# Note: no type_params wrapper in v2 format
+metrics:
+  - name: return_rate
+    label: "Return Rate"
+    type: ratio
+    numerator: returned_orders
+    denominator: total_orders
+    config:
+      meta:
+        format: "percent"
+
+  - name: revenue_per_customer
+    label: "Revenue per Customer"
+    type: derived
+    expr: total_revenue / unique_customers
+    input_metrics:
+      - name: total_revenue
+      - name: unique_customers
+
+  - name: cumulative_revenue
+    label: "Cumulative Revenue"
+    type: cumulative
+    input_metric: total_revenue
+```
+
+### Semantic Layer Features
+
+| Feature | dbt YAML | Cube.js output |
+|---|---|---|
+| Human-readable title | `label: "Total Orders"` | `title: 'Total Orders'` |
+| Number format | `config.meta.format: "percent"` | `format: 'percent'` |
+| Metric filter | `config.meta.filter: "${CUBE}.col = val"` | `filters: [{ sql: ... }]` |
+| Measure filter | CASE WHEN in `expr:` | SQL in `sql:` field |
+| Cube.js joins | `entity: { type: foreign }` matching another SM's primary entity | `joins: { TargetCube: { sql, relationship } }` |
+| Pre-aggregations | `config.meta.pre_aggregations:` on the model | `pre_aggregations: { ... }` |
+
+### Filter Patterns
+
+**Measure-level filtering** (ODP student exclusion example from production):
+```yaml
+# In the metric expr — CASE WHEN is the safest pattern
+- name: present_days
+  type: simple
+  agg: sum
+  expr: >
+    case when current_odp = 0 then 1 else 0 end
+```
+
+**Metric-level filtering** (applied after aggregation):
+```yaml
+# In config.meta.filter — use ${CUBE}.col syntax, not {{ Dimension() }}
+- name: active_students
+  type: simple
+  agg: count_distinct
+  expr: student_id
+  config:
+    meta:
+      filter: "${CUBE}.is_active = 1"
+```
+
+> **Note**: `{{ Dimension('x') }} = val` (MetricFlow DSL) cannot be used in dbt YAML because dbt renders all YAML values through Jinja2 at parse time. Use `${CUBE}.col = val` (Cube.js SQL syntax) in `config.meta.filter` instead.
+
+### Format Values
+
+| `config.meta.format` | Cube.js `format` |
+|---|---|
+| `"percent"` or any string containing `%` | `'percent'` |
+| `"currency"` or strings starting with `$` | `'currency'` |
+| Any other string (e.g. `"0.00"`) | passed through as-is |
+
+### Joins from Foreign Entities
+
+Cube.js joins are auto-generated when a semantic model has a `foreign` entity whose name matches a `primary` entity in another semantic model:
+
+```yaml
+# semantic_model A (attendance)
+entities:
+  - name: course_id       # ← matches the primary entity name in model B
+    type: foreign
+    expr: section_id      # physical column name
+
+# semantic_model B (courses)
+entities:
+  - name: course_id
+    type: primary
+    expr: course_id
+```
+
+Generates in Cube.js:
+```javascript
+joins: {
+  Courses: {
+    sql: `${Attendance}.section_id = ${Courses}.course_id`,
+    relationship: `many_to_one`
+  }
+}
 ```
 
 ## 📁 Project Structure

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 from jinja2 import Environment, FileSystemLoader, Template
 
-from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey
+from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey, CubeJoin
 from .dbt_parser import DbtParser
 
 
@@ -91,13 +91,15 @@ class CubeGenerator:
             cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
             col_sql = self._safe_sql_expr(col_data.sql or col_name, raw_type)
 
-            label = (col_data.meta or {}).get('label')
+            meta = col_data.meta or {}
+            label = meta.get('label')
             dimension = CubeDimension(
                 name=col_name,
                 sql=col_sql,
                 type=cube_type,
                 title=label or col_name.replace('_', ' ').title(),
-                description=col_data.description
+                description=col_data.description,
+                primary_key=bool(meta.get('primary-key')),
             )
             dimensions.append(dimension)
         
@@ -120,10 +122,12 @@ class CubeGenerator:
                 type=cube_type,
                 sql=sql_expr,
                 title=metric_data.title or metric_name.replace('_', ' ').title(),
-                description=metric_data.description
+                description=metric_data.description,
+                format=metric_data.format,
+                filters=metric_data.filters,
             )
             measures.append(measure)
-        
+
         # Convert pre-aggregations
         pre_aggregations = []
         for pre_agg_name, pre_agg_data in model.pre_aggregations.items():
@@ -153,7 +157,8 @@ class CubeGenerator:
             sql=sql,
             dimensions=dimensions,
             measures=measures,
-            pre_aggregations=pre_aggregations
+            pre_aggregations=pre_aggregations,
+            joins=model.joins,
         )
     
     def _render_cube_content(self, cube_schema: CubeSchema) -> str:
@@ -166,7 +171,8 @@ class CubeGenerator:
                 sql=cube_schema.sql,
                 dimensions=cube_schema.dimensions,
                 measures=cube_schema.measures,
-                pre_aggregations=cube_schema.pre_aggregations
+                pre_aggregations=cube_schema.pre_aggregations,
+                joins=cube_schema.joins,
             )
         return self._generate_cube_content(cube_schema)
     
@@ -186,12 +192,14 @@ class CubeGenerator:
                 f"      type: `{dim.type}`",
                 f"      title: `{dim.title}`",
             ]
+            if dim.primary_key:
+                dim_lines.append(f"      primaryKey: true")
             if dim.description:
                 dim_lines.append(f"      description: `{dim.description}`")
             dim_content = f"    {dim.name}: {{\n" + ",\n".join(dim_lines) + "\n    }"
             dimensions_content.append(dim_content)
         
-        # Generate measures  
+        # Generate measures
         measures_content = []
         for measure in cube_schema.measures:
             measure_lines = [
@@ -201,6 +209,13 @@ class CubeGenerator:
             ]
             if measure.description:
                 measure_lines.append(f"      description: `{measure.description}`")
+            if measure.format:
+                measure_lines.append(f"      format: `{measure.format}`")
+            if measure.filters:
+                filters_js = ', '.join(
+                    [f"{{ sql: `{f}` }}" for f in measure.filters]
+                )
+                measure_lines.append(f"      filters: [{filters_js}]")
             measure_content = f"    {measure.name}: {{\n" + ",\n".join(measure_lines) + "\n    }"
             measures_content.append(measure_content)
         
@@ -249,47 +264,43 @@ class CubeGenerator:
     }}"""
             pre_aggregations_content.append(pre_agg_content)
         
+        # Generate joins
+        joins_content = []
+        for join in cube_schema.joins:
+            join_content = (
+                f"    {join.name}: {{\n"
+                f"      sql: `{join.sql}`,\n"
+                f"      relationship: `{join.relationship}`\n"
+                f"    }}"
+            )
+            joins_content.append(join_content)
+
         # Combine into full cube definition
         dimensions_joined = ',\n\n'.join(dimensions_content)
         measures_joined = ',\n\n'.join(measures_content)
-        
+
         # Ensure we have measures (required for a useful Cube.js schema)
         if not measures_content:
-            raise ValueError(f"Cube {cube_schema.cube_name} has no measures defined. Measures are required for Cube.js schemas.")
-        
+            raise ValueError(
+                f"Cube {cube_schema.cube_name} has no measures defined. "
+                "Measures are required for Cube.js schemas."
+            )
+
+        sections: List[str] = [f"  sql: `{cube_schema.sql}`"]
+
+        if joins_content:
+            joins_joined = ',\n\n'.join(joins_content)
+            sections.append(f"  joins: {{\n{joins_joined}\n  }}")
+
+        sections.append(f"  dimensions: {{\n{dimensions_joined}\n  }}")
+        sections.append(f"  measures: {{\n{measures_joined}\n  }}")
+
         if pre_aggregations_content:
-            pre_aggregations_joined = ',\n\n'.join(pre_aggregations_content)
-            content = f"""cube(`{cube_schema.cube_name}`, {{
-  sql: `{cube_schema.sql}`,
-  
-  dimensions: {{
-{dimensions_joined}
-  }},
-  
-  measures: {{
-{measures_joined}
-  }},
-  
-  pre_aggregations: {{
-{pre_aggregations_joined}
-  }}
-}});
-"""
-        else:
-            content = f"""cube(`{cube_schema.cube_name}`, {{
-  sql: `{cube_schema.sql}`,
-  
-  dimensions: {{
-{dimensions_joined}
-  }},
-  
-  measures: {{
-{measures_joined}
-  }}
-}});
-"""
-        
-        return content
+            pre_aggs_joined = ',\n\n'.join(pre_aggregations_content)
+            sections.append(f"  pre_aggregations: {{\n{pre_aggs_joined}\n  }}")
+
+        body = ',\n\n'.join(sections)
+        return f"cube(`{cube_schema.cube_name}`, {{\n{body}\n}});\n"
     
     @staticmethod
     def _safe_sql_expr(col_name: str, raw_type: str) -> str:

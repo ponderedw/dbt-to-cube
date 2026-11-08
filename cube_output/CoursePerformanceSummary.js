@@ -1,6 +1,6 @@
 cube(`CoursePerformanceSummary`, {
   sql: `SELECT * FROM public.course_performance_summary`,
-  
+
   dimensions: {
     course_id: {
       sql: `course_id`,
@@ -93,20 +93,22 @@ cube(`CoursePerformanceSummary`, {
       description: `Overall performance category for the course`
     }
   },
-  
+
   measures: {
     average_course_gpa: {
       type: `avg`,
       sql: `avg_grade_points`,
       title: `Average Course GPA`,
-      description: `Mean grade point average across all enrolled students`
+      description: `Mean grade point average across all enrolled students`,
+      format: `0.00`
     },
 
     course_pass_rate: {
       type: `avg`,
       sql: `pass_rate_percentage / 100`,
       title: `Course Pass Rate`,
-      description: `Proportion of students achieving a passing grade (2.0+ GPA)`
+      description: `Proportion of students achieving a passing grade (2.0+ GPA)`,
+      format: `percent`
     },
 
     total_course_enrollments: {
@@ -120,10 +122,11 @@ cube(`CoursePerformanceSummary`, {
       type: `avg`,
       sql: `(avg_attendance * 0.6 + avg_grade_points * 25)`,
       title: `Student Engagement Score`,
-      description: `Composite score combining attendance (60%) and academic performance (40%)`
+      description: `Composite score combining attendance (60%) and academic performance (40%)`,
+      format: `0.0`
     }
   },
-  
+
   pre_aggregations: {
     course_performance_realtime: {
       type: `rollup`,

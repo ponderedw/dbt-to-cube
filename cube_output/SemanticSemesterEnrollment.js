@@ -1,7 +1,22 @@
 cube(`SemanticSemesterEnrollment`, {
   sql: `SELECT * FROM public.semester_enrollment_trends`,
-  
+
   dimensions: {
+    semester_id: {
+      sql: `semester_id`,
+      type: `string`,
+      title: `Semester ID`,
+      primaryKey: true,
+      description: `primary key`
+    },
+
+    school_id: {
+      sql: `school_id`,
+      type: `string`,
+      title: `School ID`,
+      description: `foreign key`
+    },
+
     semester_name: {
       sql: `semester_name`,
       type: `string`,
@@ -44,7 +59,7 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Date the semester ended.`
     }
   },
-  
+
   measures: {
     total_semester_enrollments: {
       type: `sum`,
@@ -88,46 +103,11 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Number of students placed on academic probation.`
     },
 
-    average_semester_gpa: {
-      type: `avg`,
-      sql: `avg_semester_grade_points`,
-      title: `Average Semester GPA`,
-      description: `Mean grade point average across all semesters.`
-    },
-
-    deans_list_rate: {
-      type: `number`,
-      sql: `${total_deans_list} / NULLIF(${total_semester_headcount}, 0)`,
-      title: `Dean's List Rate`,
-      description: `Proportion of enrolled students achieving Dean's List standing.`
-    },
-
-    total_deans_list: {
+    total_semester_headcount: {
       type: `sum`,
-      sql: `deans_list_students`,
-      title: `Total Dean's List`,
-      description: `Total students achieving Dean's List standing.`
-    },
-
-    academic_risk_ratio: {
-      type: `number`,
-      sql: `${total_on_probation} / NULLIF(${total_semester_headcount}, 0)`,
-      title: `Academic Risk Ratio`,
-      description: `Ratio of students on academic probation to total enrolled students.`
-    },
-
-    total_on_probation: {
-      type: `sum`,
-      sql: `probation_students`,
-      title: `Total Students on Probation`,
-      description: `Total students placed on academic probation.`
-    },
-
-    courses_per_student: {
-      type: `number`,
-      sql: `${total_semester_courses} / ${total_semester_headcount}`,
-      title: `Courses per Student`,
-      description: `Average number of courses taken per enrolled student each semester.`
+      sql: `unique_students`,
+      title: `Total Semester Headcount`,
+      description: `Total distinct students enrolled across all semesters.`
     },
 
     total_semester_courses: {
@@ -137,14 +117,67 @@ cube(`SemanticSemesterEnrollment`, {
       description: `Total distinct courses offered across all semesters.`
     },
 
-    total_semester_headcount: {
+    average_semester_gpa: {
+      type: `avg`,
+      sql: `avg_semester_grade_points`,
+      title: `Average Semester GPA`,
+      description: `Mean grade point average across all semesters.`
+    },
+
+    total_deans_list: {
+      type: `sum`,
+      sql: `deans_list_students`,
+      title: `Total Dean's List`,
+      description: `Total students achieving Dean's List standing.`
+    },
+
+    total_on_probation: {
+      type: `sum`,
+      sql: `probation_students`,
+      title: `Total Students on Probation`,
+      description: `Total students placed on academic probation.`
+    },
+
+    deans_list_rate: {
+      type: `number`,
+      sql: `${total_deans_list} / NULLIF(${total_semester_headcount}, 0)`,
+      title: `Dean's List Rate`,
+      description: `Proportion of enrolled students achieving Dean's List standing.`,
+      format: `percent`
+    },
+
+    academic_risk_ratio: {
+      type: `number`,
+      sql: `${total_on_probation} / NULLIF(${total_semester_headcount}, 0)`,
+      title: `Academic Risk Ratio`,
+      description: `Ratio of students on academic probation to total enrolled students.`,
+      format: `percent`
+    },
+
+    courses_per_student: {
+      type: `number`,
+      sql: `${total_semester_courses} / ${total_semester_headcount}`,
+      title: `Courses per Student`,
+      description: `Average number of courses taken per enrolled student each semester.`
+    },
+
+    active_semester_headcount: {
       type: `sum`,
       sql: `unique_students`,
-      title: `Total Semester Headcount`,
-      description: `Total distinct students enrolled across all semesters.`
+      title: `Active Semester Headcount`,
+      description: `Distinct students enrolled in semesters that are currently Active.`,
+      filters: [{ sql: `${CUBE}.semester_status = 'Active'` }]
+    },
+
+    gpa_improvement_target: {
+      type: `number`,
+      sql: `(3.5 - ${average_semester_gpa}) / 3.5 * 100`,
+      title: `GPA Improvement Target`,
+      description: `GPA gap between Dean's List threshold (3.5) and average semester GPA, as a percentage.`,
+      format: `percent`
     }
   },
-  
+
   pre_aggregations: {
     enrollment_by_semester_type_quarterly: {
       type: `rollup`,

@@ -124,3 +124,105 @@ models:
             every: "30 minutes"
       owner:
         - academic-analytics@university.edu
+
+- name: student_attendance
+  description: "Student attendance records aggregated by student, section, and semester"
+  columns:
+    - name: student_id
+      description: "Unique student identifier"
+      meta:
+        label: "Student ID"
+    - name: section_id
+      description: "Physical course section column (logical name: course_id)"
+      meta:
+        label: "Course (Section ID)"
+    - name: school_id
+      description: "Unique school identifier"
+      meta:
+        label: "School ID"
+    - name: academic_year
+      description: "Academic year (e.g. 2024-2025)"
+      meta:
+        label: "Academic Year"
+    - name: semester_name
+      description: "Semester name (e.g. Fall 2024)"
+      meta:
+        label: "Semester"
+    - name: semester_type
+      description: "Season of the semester: Fall, Spring, or Summer"
+      meta:
+        label: "Semester Type"
+    - name: school_name
+      description: "Full name of the school"
+      meta:
+        label: "School"
+    - name: gradespan
+      description: "Grade span of the school (e.g. K-8, 9-12)"
+      meta:
+        label: "Gradespan"
+    - name: is_odp_student
+      description: "1 if the student is in an out-of-district placement (ODP)"
+      meta:
+        label: "ODP Student"
+  config:
+    meta:
+      metrics:
+        # Feature 1: basic sum metric
+        total_days_enrolled:
+          type: sum
+          label: "Total Days Enrolled"
+          description: "Total enrolled school days across all students"
+          sql: days_enrolled
+
+        # Feature 2: metric with format (attendance_rate is a 0-1 ratio → show as %)
+        attendance_rate:
+          type: average
+          label: "Attendance Rate"
+          description: "Average daily attendance rate (days present / days enrolled)"
+          format: "0.0%"
+          sql: attendance_rate
+
+        # Feature 3: metric with filter — exclude ODP students (mirrors tardy_days example)
+        tardy_days:
+          type: sum
+          label: "Tardy Days"
+          description: >
+            Total tardy days for non-ODP students. All reporting should exclude
+            ODP students.
+          sql: days_tardy
+          filter: "is_odp_student = 0"
+
+        # Feature 4: absence rate with format + filter combined
+        absence_rate_non_odp:
+          type: average
+          label: "Absence Rate (non-ODP)"
+          description: >
+            Average absence rate for non-ODP students, as a percentage.
+          format: "0.0%"
+          sql: absence_rate
+          filter: "is_odp_student = 0"
+
+        # Feature 5: derived metric referencing other metrics via ${...}
+        chronic_absence_days:
+          type: sum
+          label: "Chronic Absence Days"
+          description: "Total absent days (complement of attendance)"
+          sql: days_absent
+
+      pre_aggregations:
+        attendance_by_school_semester:
+          type: rollup
+          measures:
+            - total_days_enrolled
+            - attendance_rate
+            - tardy_days
+            - absence_rate_non_odp
+            - chronic_absence_days
+          dimensions:
+            - school_name
+            - gradespan
+            - semester_name
+            - academic_year
+            - is_odp_student
+          refresh_key:
+            every: "1 day"

@@ -11,6 +11,19 @@ from .db_inspector import DatabaseInspector
 from .macro_resolver import MacroResolver
 
 
+def _map_dbt_format(format_str: Optional[str]) -> Optional[str]:
+    """Map a dbt format hint to a Cube.js format string."""
+    if not format_str:
+        return None
+    fmt = format_str.strip()
+    fmt_lower = fmt.lower()
+    if fmt_lower == 'percent' or '%' in fmt:
+        return 'percent'
+    if fmt_lower == 'currency' or fmt.startswith('$'):
+        return 'currency'
+    return fmt or None
+
+
 class DbtParser:
     """Parses dbt manifest.json to extract model and metric information"""
 
@@ -298,12 +311,17 @@ class DbtParser:
                 resolved_sql = self.macro_resolver.resolve(raw_sql) if raw_sql else raw_sql
                 resolved_sql = self._normalize_decimal(resolved_sql) if resolved_sql else resolved_sql
 
+                raw_filter = metric_config.get('filter')
+                cube_filters = [raw_filter] if raw_filter else None
+
                 metrics[metric_name] = DbtMetric(
                     name=metric_name,
                     type=metric_config.get('type', 'sum'),
                     sql=resolved_sql,
                     title=metric_config.get('label') or metric_config.get('title') or metric_name.replace('_', ' ').title(),
-                    description=metric_config.get('description')
+                    description=metric_config.get('description'),
+                    format=_map_dbt_format(metric_config.get('format')),
+                    filters=cube_filters,
                 )
         
         return metrics

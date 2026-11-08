@@ -40,6 +40,8 @@ class MetricFlowMeasure(BaseModel):
     description: Optional[str] = None
     label: Optional[str] = None
     agg_time_dimension: Optional[str] = None
+    filter: Optional[str] = None  # MetricFlow filter expression
+    format: Optional[str] = None  # format hint, e.g. "percent", "currency"
 
 
 class MetricFlowSemanticModel(BaseModel):
@@ -85,6 +87,8 @@ class MetricFlowMetric(BaseModel):
     description: Optional[str] = None
     type: str  # simple, derived, ratio, cumulative
     type_params: MetricFlowTypeParams
+    filter: Optional[str] = None  # MetricFlow filter expression
+    format: Optional[str] = None  # format hint, e.g. "percent", "currency"
 
 
 class DbtColumn(BaseModel):
@@ -93,7 +97,7 @@ class DbtColumn(BaseModel):
     data_type: Optional[str] = None
     description: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
-    sql: Optional[str] = None  # overrides name as the SQL column expression (used when logical name ≠ physical column)
+    sql: Optional[str] = None  # overrides name as the SQL expression
 
 
 class DbtMetric(BaseModel):
@@ -103,6 +107,8 @@ class DbtMetric(BaseModel):
     sql: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
+    format: Optional[str] = None  # Cube.js format: 'percent', 'currency', 'number'
+    filters: Optional[List[str]] = None  # list of SQL filter expressions for Cube.js
 
 
 class DbtRefreshKey(BaseModel):
@@ -124,6 +130,17 @@ class DbtPreAggregation(BaseModel):
     refresh_key: Optional[DbtRefreshKey] = None
 
 
+# ---------------------------------------------------------------------------
+# Cube.js output models  (defined before DbtModel so DbtModel can reference them)
+# ---------------------------------------------------------------------------
+
+class CubeJoin(BaseModel):
+    """Represents a Cube.js join definition"""
+    name: str           # the target cube name
+    sql: str            # join condition, e.g. "${CUBE}.fk_col = ${TargetCube}.pk_col"
+    relationship: str   # many_to_one | one_to_many | one_to_one | many_to_many
+
+
 class DbtModel(BaseModel):
     """Represents a parsed dbt model"""
     name: str
@@ -134,6 +151,7 @@ class DbtModel(BaseModel):
     columns: Dict[str, DbtColumn]
     metrics: Dict[str, DbtMetric]
     pre_aggregations: Dict[str, DbtPreAggregation] = {}
+    joins: List[CubeJoin] = []
 
 
 class CubeDimension(BaseModel):
@@ -143,6 +161,7 @@ class CubeDimension(BaseModel):
     type: str
     title: Optional[str] = None
     description: Optional[str] = None
+    primary_key: bool = False
 
 
 class CubeMeasure(BaseModel):
@@ -152,6 +171,8 @@ class CubeMeasure(BaseModel):
     sql: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
+    format: Optional[str] = None  # 'percent', 'currency', 'number'
+    filters: Optional[List[str]] = None  # list of SQL filter expressions
 
 
 class CubeRefreshKey(BaseModel):
@@ -180,6 +201,7 @@ class CubeSchema(BaseModel):
     dimensions: List[CubeDimension]
     measures: List[CubeMeasure]
     pre_aggregations: List[CubePreAggregation] = []
+    joins: List[CubeJoin] = []
 
 
 class SyncResult(BaseModel):
