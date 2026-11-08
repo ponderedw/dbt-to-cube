@@ -333,8 +333,26 @@ class MetricFlowParser:
             # Support both locations for backward compatibility.
             meta = data.get('meta') or {}
             config_meta = (data.get('config') or {}).get('meta') or {}
-            # filter can live at top level (manifest-compiled value) or in meta
-            filter_val = data.get('filter') or meta.get('filter') or config_meta.get('filter')
+            # filter can live at top level (manifest-compiled value) or in meta.
+            # Native MetricFlow format stores filter as:
+            #   {'where_filters': [{'where_sql_template': "{{ Dimension('entity__col') }} = 'val'"}]}
+            # Convert to Cube.js ${CUBE}.col syntax.
+            raw_filter = data.get('filter') or meta.get('filter') or config_meta.get('filter')
+            if isinstance(raw_filter, dict):
+                where_filters = raw_filter.get('where_filters') or []
+                sql_parts = []
+                for wf in where_filters:
+                    tmpl = wf.get('where_sql_template', '')
+                    if tmpl:
+                        tmpl = re.sub(
+                            r"\{\{\s*Dimension\('(?:[^']+__)?([^']+)'\)\s*\}\}",
+                            r"${CUBE}.\1",
+                            tmpl,
+                        )
+                        sql_parts.append(tmpl.strip())
+                filter_val = ' AND '.join(sql_parts) if sql_parts else None
+            else:
+                filter_val = raw_filter
             return MetricFlowMetric(
                 name=data['name'],
                 label=data.get('label'),

@@ -1,23 +1,50 @@
 {
-  "version": "1.0",
-  "last_sync_timestamp": "2026-11-08T15:31:25.899357Z",
-  "manifest_path": "DbtEducationalDataProject/target/manifest.json",
+  "version": "1.1",
+  "last_sync_timestamp": "2026-11-08T17:55:57.450837Z",
+  "manifest_path": "/workspace/DbtEducationalDataProject/target/manifest.json",
   "models": {
     "model.DbtEducationalDataProject.course_performance_summary": {
-      "checksum": "7a01a22fe053c2e50721a419df53418cb0a5eafb8b0ba993f771158512030d8b",
+      "checksum": "98866c479206000ff59cd255c184dc529595b816d0f3ad82e1b2954293296e57",
       "has_metrics": true,
       "last_generated": "2026-11-08T15:31:25.899357Z",
-      "output_file": "cube_output/CoursePerformanceSummary.js",
+      "output_file": "/workspace/cube_output/CoursePerformanceSummary.js",
       "output_checksum": "71b1c929184247cd72f3dff8ba006095e4f57ab3bd1b95bd5fd8d989e5624087",
       "superset_sync_status": null,
       "rag_sync_status": null
     },
     "model.DbtEducationalDataProject.student_attendance": {
-      "checksum": "e6d065f273b6695b2b953cb944678146f49b16509efab70e14dd6bfcb1338fb4",
+      "checksum": "ded0a92e9cc2c11c1d4c23ee0ac5cc65d67f0720d75a1200560bb094a632b0fb",
       "has_metrics": true,
-      "last_generated": "2026-11-08T15:31:25.899357Z",
-      "output_file": "cube_output/StudentAttendance.js",
-      "output_checksum": "e61ec5f5f89887df28a09fddd50b2637dbb0442195b50ab777a4edabf01b8186",
+      "last_generated": "2026-11-08T17:55:57.450837Z",
+      "output_file": "/workspace/cube_output/StudentAttendance.js",
+      "output_checksum": "224bcd3454123057d16dfdf7ebc45eeaf14dd6d16ae87b50db9c3aa490810bd9",
+      "superset_sync_status": null,
+      "rag_sync_status": null
+    },
+    "semantic_model.semantic_course_performance.semantic_course_performance": {
+      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
+      "has_metrics": false,
+      "last_generated": "2026-11-08T17:55:57.450837Z",
+      "output_file": "/workspace/cube_output/SemanticCoursePerformance.js",
+      "output_checksum": "37ce649a64006f11c589c549d0338f1a40f814a4b511e7e3555feec45cf21841",
+      "superset_sync_status": null,
+      "rag_sync_status": null
+    },
+    "semantic_model.semantic_semester_enrollment.semantic_semester_enrollment": {
+      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
+      "has_metrics": false,
+      "last_generated": "2026-11-08T17:55:57.450837Z",
+      "output_file": "/workspace/cube_output/SemanticSemesterEnrollment.js",
+      "output_checksum": "fc5bbc74d9b778d235f4d7ff94031670f0d244fb8765d4f41e51e904d4d89c5b",
+      "superset_sync_status": null,
+      "rag_sync_status": null
+    },
+    "semantic_model.semantic_student_attendance.semantic_student_attendance": {
+      "checksum": "3114790f30df7a375b77913c215ac4dd5b75526d952de6942d649e7f4f7ea6c4",
+      "has_metrics": false,
+      "last_generated": "2026-11-08T17:55:57.450837Z",
+      "output_file": "/workspace/cube_output/SemanticStudentAttendance.js",
+      "output_checksum": "981dfa56d83f46994f04f2b064641a7dac8afdb18d944257ef7af844cb5f0d4f",
       "superset_sync_status": null,
       "rag_sync_status": null
     }

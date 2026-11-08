@@ -767,7 +767,7 @@ def sync_all(
         if changes_detected or force_full_sync:
             click.echo(f"  Models processed: {len(added_models) + len(modified_models)}")
             click.echo(f"  Models removed: {len(removed_models)}")
-            click.echo(f"  Cube.js files generated: {len(generated_files)}")
+            click.echo(f"  Cube.js files generated: {len(file_paths)}")
         else:
             click.echo("  No model changes detected")
 
