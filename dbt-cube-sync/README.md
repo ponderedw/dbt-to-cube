@@ -5,12 +5,26 @@ A powerful synchronization tool that creates a seamless pipeline from dbt models
 ## Features
 
 - 🔄 **dbt → Cube.js**: Auto-generate Cube.js schemas from dbt models with metrics
+- 📐 **All metric formats**: Reads `config.meta.metrics` (Format 1), MetricFlow v1 standalone (Format 2), and MetricFlow v2 inline (Format 3) from the dbt manifest
 - 🗃️ **Flexible Data Type Source**: Get column types from catalog OR directly from database via SQLAlchemy
 - 🎯 **Model Filtering**: Process specific models instead of all models
 - 📊 **Cube.js → BI Tools**: Sync schemas to multiple BI platforms
 - 🏗️ **Extensible Architecture**: Plugin-based connector system for easy BI tool integration
 - 🐳 **Docker Support**: Containerized execution with orchestration support
 - 🎯 **CLI Interface**: Simple command-line tools for automation
+
+## Metric format support
+
+`dbt-cube-sync` reads from `manifest.json` directly in Python and is not affected by
+dbt version differences in the Jinja context. All three formats work:
+
+| Format | Parser | dbt versions |
+|--------|--------|-------------|
+| `config.meta.metrics` | `DbtParser` | Any |
+| MetricFlow v1 standalone (`semantic_models:` + `metrics:` YAML) | `MetricFlowParser` | 1.5–1.11 |
+| MetricFlow v2 inline (metrics nested under model) | `MetricFlowParser` | 1.9+, dbt-fusion 2.x |
+
+For the full format reference see [`SEMANTIC_LAYER_FORMATS.md`](../SEMANTIC_LAYER_FORMATS.md).
 
 ## Supported BI Tools
 

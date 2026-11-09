@@ -117,10 +117,20 @@ docker-compose exec dbt-cube-sync dbt-cube-sync cube-to-bi superset \
 
 ## 🧠 MetricFlow Semantic Layer
 
-The converter supports **both** dbt MetricFlow input formats:
+> **Use Format 3 (inline).** It is the preferred format for all new semantic layer
+> work at Ponder, works with both dbt 1.x and dbt-fusion 2.x, and is the only format
+> that supports `dbt_simple_metrics` macros under dbt-fusion 2.x. For the full format
+> reference see [`SEMANTIC_LAYER_FORMATS.md`](SEMANTIC_LAYER_FORMATS.md).
 
-### Format 1: Legacy (top-level `semantic_models:` + `metrics:`)
-Used by dbt 1.0–1.11 and still valid in 1.12. Semantic models and metrics live in separate top-level YAML keys.
+Three metric input formats are supported:
+
+### Format 1: `config.meta.metrics` (Ponder custom)
+Works with every dbt version. Metrics are plain dicts inside `config.meta.metrics` on
+the model. Used for backward compatibility and when MetricFlow is unavailable.
+
+### Format 2: MetricFlow v1 (top-level `semantic_models:` + `metrics:`) — legacy
+Used by dbt 1.5–1.11. Semantic models and metrics live in separate top-level YAML keys.
+**Do not use for new models** — incompatible with dbt-fusion 2.x macros.
 
 ```yaml
 # models/semantic_models.yml
@@ -146,8 +156,9 @@ metrics:
       measure: order_count
 ```
 
-### Format 2: v2 Fusion (inline in model YAML, dbt 1.12+)
+### Format 3: MetricFlow v2 inline ✓ PREFERRED (dbt 1.9+, dbt-fusion 2.x)
 Semantic model, entities, dimensions, and metrics all live inside the model definition.
+Requires `dbt_simple_metrics` v1.0.9+ for dbt-fusion 2.x compatibility.
 
 ```yaml
 # models/orders/schema.yml
@@ -178,16 +189,14 @@ models:
         agg: count
         expr: 1
 
-      # Metric-level filter — use ${CUBE}.col syntax (not {{ Dimension() }},
-      # which triggers dbt Jinja2 rendering at parse time)
+      # Metric-level filter — MetricFlow native syntax (supported by dbt_simple_metrics v1.0.9+)
       - name: us_orders
         label: "US Orders"
         type: simple
         agg: count
         expr: 1
-        config:
-          meta:
-            filter: "${CUBE}.country = 'US'"
+        filter: "{{ Dimension('order__country') }} = 'US'"
+        # compiles to: count(case when country = 'US' then 1 end)
 
 # Top-level advanced metrics (ratio, derived, cumulative)
 # Note: no type_params wrapper in v2 format
@@ -238,19 +247,23 @@ metrics:
     case when current_odp = 0 then 1 else 0 end
 ```
 
-**Metric-level filtering** (applied after aggregation):
+**Metric-level filtering — MetricFlow native syntax** (Format 3, `dbt_simple_metrics` v1.0.9+):
 ```yaml
-# In config.meta.filter — use ${CUBE}.col syntax, not {{ Dimension() }}
 - name: active_students
   type: simple
   agg: count_distinct
   expr: student_id
+  filter: "{{ Dimension('student__is_active') }} = 1"
+  # compiles to: count(distinct case when is_active = 1 then student_id end)
+```
+
+**Metric-level filtering — Cube.js-style** (Format 1 `config.meta.filter`, or when MetricFlow DSL isn't available):
+```yaml
+- name: active_students
   config:
     meta:
       filter: "${CUBE}.is_active = 1"
 ```
-
-> **Note**: `{{ Dimension('x') }} = val` (MetricFlow DSL) cannot be used in dbt YAML because dbt renders all YAML values through Jinja2 at parse time. Use `${CUBE}.col = val` (Cube.js SQL syntax) in `config.meta.filter` instead.
 
 ### Format Values
 
