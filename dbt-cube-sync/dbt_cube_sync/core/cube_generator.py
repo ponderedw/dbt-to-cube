@@ -195,7 +195,8 @@ class CubeGenerator:
             if dim.primary_key:
                 dim_lines.append(f"      primaryKey: true")
             if dim.description:
-                dim_lines.append(f"      description: `{dim.description}`")
+                safe_desc = dim.description.replace('`', "'")
+                dim_lines.append(f"      description: `{safe_desc}`")
             dim_content = f"    {dim.name}: {{\n" + ",\n".join(dim_lines) + "\n    }"
             dimensions_content.append(dim_content)
         
@@ -208,7 +209,8 @@ class CubeGenerator:
                 f"      title: `{measure.title}`",
             ]
             if measure.description:
-                measure_lines.append(f"      description: `{measure.description}`")
+                safe_desc = measure.description.replace('`', "'")
+                measure_lines.append(f"      description: `{safe_desc}`")
             if measure.format:
                 measure_lines.append(f"      format: `{measure.format}`")
             if measure.filters:
