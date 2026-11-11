@@ -1,0 +1,11 @@
+{
+  "name": "dbt-cube-sync",
+  "owner": { "name": "Ponder" },
+  "plugins": [
+    {
+      "name": "dbt-cube-sync",
+      "source": "./claude",
+      "description": "Skills for dbt-cube-sync: generate Cube.js schemas from dbt models and define the dbt semantic layer"
+    }
+  ]
+}
