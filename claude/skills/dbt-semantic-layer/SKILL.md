@@ -7,7 +7,7 @@ description: How to annotate dbt models so dbt-cube-sync generates Cube.js schem
 
 `dbt-cube-sync` reads `manifest.json` and supports three annotation formats. All three can coexist in the same project.
 
-**Default: use Format 3 (MetricFlow v2 inline) unless the user asks for something else.** It keeps semantic layer definitions co-located with the model YAML, works with dbt 1.9+ and dbt-fusion 2.x, and is the direction dbt is investing in. Use Format 1 only when dbt version is below 1.5 or the project already uses `config.meta.metrics`. Use Format 2 when the team prefers semantic model definitions in a dedicated file rather than inline.
+**Default: use Format 3 (MetricFlow v2 inline) unless the user asks for something else.** It keeps semantic layer definitions co-located with the model YAML, works with dbt 1.9+ and dbt-fusion 2.x, and is the direction dbt is investing in. Use Format 1 only when dbt version is below 1.5 or the project already uses `config.meta.metrics`. Use Format 2 only when the dbt version is 1.5–1.11 — do not suggest it for projects already on dbt 1.9+ or dbt-fusion 2.x, as the top-level `semantic_models:` block is incompatible with MetricFlow v2 inline parsing.
 
 **Minimum versions:** dbt 1.9+ or dbt-fusion 2.x; `dbt-cube-sync` 0.1.0a46+; `dbt_simple_metrics` 1.0.9+ (if used).
 
@@ -269,9 +269,16 @@ models:
 
 ## Common patterns across all formats
 
-### CASE WHEN in measure expressions
+### CASE WHEN vs `filter:` — semantically different operations
 
-Use CASE WHEN inside `expr:` / `sql:` to implement conditional aggregation (the preferred pattern for exclusion logic):
+These are not alternatives. Choose based on what the SQL must do:
+
+| Pattern | Where it goes | What it does |
+|---------|---------------|--------------|
+| `case when … then v else null end` in `expr:` | on the measure/metric | **Pre-aggregation** — controls what rows contribute to the SUM/COUNT |
+| `filter:` on the metric | top-level on the metric | **Post-aggregation** — restricts which grouped rows are returned, like a WHERE on the outer query |
+
+Use CASE WHEN in `expr:` for conditional aggregation (the dominant pattern — exclusion logic, scoring, presence flags):
 
 ```yaml
 # Format 1
@@ -280,6 +287,8 @@ sql: "case when is_odp = 0 then amount else null end"
 # Format 2 / 3
 expr: "case when is_odp = 0 then amount else null end"
 ```
+
+Use `filter:` only when you need to expose a categorical restriction as a parameterizable slice in Cube / BI (e.g. `country = 'US'` on a count metric). Never use `filter:` as a substitute for CASE WHEN when the goal is conditional inclusion in the aggregation itself.
 
 ### Backtick safety in descriptions
 
@@ -365,4 +374,4 @@ metrics:
         format: "percent"
 ```
 
-For ratio metrics (a cleaner form of numerator ÷ denominator) use `type: ratio` with `numerator:` and `denominator:` referencing other metric names.
+**Prefer `type: ratio` for binary x ÷ y metrics** — it has explicit `numerator:` / `denominator:` fields, is easier for BI tools to interpret, and signals intent clearly. Use `type: derived` only when the formula involves more than two input metrics or non-division arithmetic.
