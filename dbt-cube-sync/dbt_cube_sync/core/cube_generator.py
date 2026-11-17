@@ -49,6 +49,11 @@ class CubeGenerator:
             - output_checksums: Dict[node_id -> checksum] of the generated content
             - changed_node_ids: Set of node_ids whose content actually changed (file was written)
         """
+        # Remove any legacy .js files left over from older schema format
+        for js_file in self.output_dir.glob('*.js'):
+            js_file.unlink()
+            print(f"  Removed legacy file: {js_file.name}")
+
         file_paths: Dict[str, str] = {}
         output_checksums: Dict[str, str] = {}
         changed_node_ids: Set[str] = set()

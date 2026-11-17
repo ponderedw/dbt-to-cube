@@ -440,6 +440,12 @@ def dbt_to_cube(
                 if m.output_checksum
             }
 
+        # Remove any legacy .js files left over from older schema format
+        output_path = Path(output)
+        for js_file in output_path.glob('*.js'):
+            js_file.unlink()
+            click.echo(f"  Removed legacy file: {js_file.name}")
+
         click.echo("Generating Cube.js schemas...")
         generator = CubeGenerator(template_dir, output)
         file_paths, output_checksums, changed_ids = generator.generate_cube_files(

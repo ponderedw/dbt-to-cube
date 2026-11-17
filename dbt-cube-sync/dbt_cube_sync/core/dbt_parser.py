@@ -307,7 +307,14 @@ class DbtParser:
                     m_def['format'] = metric.format
                 view_measures.append(m_def)
 
-            # Build cubes section — no prefix needed since SQL uses {CubeName.measure} directly
+            # Build cubes section — include measures referenced by cross-model SQL
+            # plus all dimension/entity columns so the view exposes dimensions too
+            for pascal_name in sorted_names:
+                model = pascal_to_model.get(pascal_name)
+                if model:
+                    for col_name in model.columns:
+                        cube_includes[pascal_name].add(col_name)
+
             view_cubes = [
                 {'join_path': name, 'includes': sorted(cube_includes[name])}
                 for name in sorted_names
