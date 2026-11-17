@@ -185,6 +185,8 @@ class SupersetConnector(BaseConnector):
         dimensions = []
         for dim in cube_info.get('dimensions', []):
             field = dim['name'].split('.')[-1]
+            if field.startswith('__'):
+                continue
             dim_type = dim.get('type', 'string')
             dimensions.append({
                 'column_name': field,
@@ -205,7 +207,7 @@ class SupersetConnector(BaseConnector):
                 'metric_name': m.get('shortTitle') or m.get('title') or field,
                 'expression': f'MEASURE({cube_name}.{field})',
                 'verbose_name': m.get('shortTitle') or m.get('title') or field,
-                'description': f'{description} ({m_type})'.strip(' ()'),
+                'description': f'{description} ({m_type})' if description else '',
                 'metric_type': 'simple',
             })
 
@@ -260,7 +262,13 @@ class SupersetConnector(BaseConnector):
             raise RuntimeError(f"Failed to fetch dataset {dataset_id}: {resp.status_code}")
 
         ds = resp.json()['result']
-        updated_columns = self._merge_columns(ds.get('columns', []), schema_info['dimensions'])
+        measure_fields = {
+            m['expression'].split('.')[-1].rstrip(')')
+            for m in schema_info['measures']
+        }
+        updated_columns = self._merge_columns(
+            ds.get('columns', []), schema_info['dimensions'], measure_fields
+        )
         updated_metrics = self._merge_metrics(ds.get('metrics', []), schema_info['measures'])
 
         put_resp = self.session.put(
@@ -272,34 +280,46 @@ class SupersetConnector(BaseConnector):
                 f"Failed to update dataset {dataset_id}: {put_resp.status_code} {put_resp.text}"
             )
 
-    def _merge_columns(self, existing: list, dimensions: list) -> list:
+    def _merge_columns(self, existing: list, dimensions: list,
+                       measure_fields: set = None) -> list:
         _SKIP = {'created_on', 'changed_on', 'type_generic', 'uuid', 'advanced_data_type'}
         dim_lookup = {d['column_name'].lower(): d for d in dimensions}
+        hidden = measure_fields or set()
         result = []
         for col in existing:
             clean = {k: v for k, v in col.items() if k not in _SKIP}
-            dim = dim_lookup.get(col['column_name'].lower())
-            if dim:
-                clean.update({
-                    'verbose_name': dim['verbose_name'],
-                    'description': dim['description'],
-                    'is_dttm': dim['is_dttm'],
-                    'groupby': dim['groupby'],
-                    'filterable': dim['filterable'],
-                    'is_active': True,
-                })
+            col_name = col['column_name'].lower()
+            if col_name.startswith('__') or col_name in hidden:
+                clean.update({'is_active': False, 'groupby': False, 'filterable': False})
+            else:
+                dim = dim_lookup.get(col_name)
+                if dim:
+                    clean.update({
+                        'verbose_name': dim['verbose_name'],
+                        'description': dim['description'],
+                        'is_dttm': dim['is_dttm'],
+                        'groupby': dim['groupby'],
+                        'filterable': dim['filterable'],
+                        'is_active': True,
+                    })
             result.append(clean)
         return result
 
     def _merge_metrics(self, existing: list, measures: list) -> list:
         _SKIP = {'created_on', 'changed_on', 'uuid'}
-        result = []
-        index: Dict[str, int] = {}
-        for m in existing:
-            clean = {k: v for k, v in m.items() if k not in _SKIP}
-            index[m.get('metric_name', '')] = len(result)
-            result.append(clean)
-
+        # Keep manually-created metrics (non-MEASURE() expressions).
+        manual = [
+            {k: v for k, v in m.items() if k not in _SKIP}
+            for m in existing
+            if not (m.get('expression') or '').strip().upper().startswith('MEASURE(')
+        ]
+        # Build lookup of existing MEASURE() metrics by name so we can reuse their id.
+        existing_by_name = {
+            m.get('metric_name', ''): m
+            for m in existing
+            if (m.get('expression') or '').strip().upper().startswith('MEASURE(')
+        }
+        new_metrics = []
         for measure in measures:
             new_m = {
                 'metric_name': measure['metric_name'],
@@ -312,12 +332,12 @@ class SupersetConnector(BaseConnector):
                 'extra': None,
                 'warning_text': None,
             }
-            if measure['metric_name'] in index:
-                result[index[measure['metric_name']]].update(new_m)
-            else:
-                result.append(new_m)
-
-        return result
+            # Reuse existing id so Superset updates rather than creates.
+            prev = existing_by_name.get(measure['metric_name'])
+            if prev and 'id' in prev:
+                new_m['id'] = prev['id']
+            new_metrics.append(new_m)
+        return manual + new_metrics
 
     @staticmethod
     def _cube_type_to_sql(cube_type: str) -> str:

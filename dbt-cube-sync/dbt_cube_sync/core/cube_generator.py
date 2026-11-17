@@ -115,28 +115,30 @@ class CubeGenerator:
         # Generate SQL reference
         sql = f"SELECT * FROM {model.schema_name}.{model.alias}"
         
-        # Convert columns to dimensions
+        # Convert columns to dimensions (sorted by name for deterministic output)
         dimensions = []
-        for col_name, col_data in model.columns.items():
+        for col_name, col_data in sorted(model.columns.items()):
             raw_type = col_data.data_type or ''
             cube_type = DbtParser.map_data_type_to_cube_type(raw_type)
             col_sql = self._safe_sql_expr(col_data.sql or col_name, raw_type)
 
             meta = col_data.meta or {}
             label = meta.get('label')
+            is_pk = bool(meta.get('primary-key'))
             dimension = CubeDimension(
                 name=col_name,
                 sql=col_sql,
                 type=cube_type,
                 title=label or col_name.replace('_', ' ').title(),
                 description=col_data.description,
-                primary_key=bool(meta.get('primary-key')),
+                primary_key=is_pk,
+                public=True if is_pk else None,
             )
             dimensions.append(dimension)
         
-        # Convert explicitly defined metrics to measures
+        # Convert explicitly defined metrics to measures (sorted for deterministic output)
         measures = []
-        for metric_name, metric_data in model.metrics.items():
+        for metric_name, metric_data in sorted(model.metrics.items()):
             cube_type = DbtParser.map_dbt_type_to_cube_type(metric_data.type)
             
             # Generate SQL expression
@@ -189,7 +191,7 @@ class CubeGenerator:
             dimensions=dimensions,
             measures=measures,
             pre_aggregations=pre_aggregations,
-            joins=model.joins,
+            joins=sorted(model.joins, key=lambda j: j.name) if model.joins else model.joins,
             access_policy=model.access_policy,
         )
     
@@ -235,6 +237,8 @@ class CubeGenerator:
                 entry: dict = {'name': d.name, 'sql': d.sql, 'type': d.type, 'title': d.title}
                 if d.primary_key:
                     entry['primary_key'] = True
+                if d.public is not None:
+                    entry['public'] = d.public
                 if d.description:
                     entry['description'] = d.description
                 dims.append(entry)

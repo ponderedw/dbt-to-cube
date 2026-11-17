@@ -15,14 +15,18 @@ A powerful synchronization tool that creates a seamless pipeline from dbt models
 
 ## Metric format support
 
-`dbt-cube-sync` reads from `manifest.json` directly in Python and is not affected by
-dbt version differences in the Jinja context. All three formats work:
+The primary supported format is the **dbt Semantic Layer** (MetricFlow). Define your metrics in
+`semantic_models:` blocks (dbt 1.5+) or inline under the model node (dbt-fusion 2.x / dbt 1.9+).
 
 | Format | Parser | dbt versions |
 |--------|--------|-------------|
-| `config.meta.metrics` | `DbtParser` | Any |
 | MetricFlow v1 standalone (`semantic_models:` + `metrics:` YAML) | `MetricFlowParser` | 1.5–1.11 |
 | MetricFlow v2 inline (metrics nested under model) | `MetricFlowParser` | dbt 1.9+, dbt-fusion 2.x |
+| `config.meta.metrics` (legacy) | `DbtParser` | Any |
+
+> **Note:** `config.meta.metrics` (a custom in-model metrics block) is supported for backwards
+> compatibility but is not the recommended approach. Use the dbt Semantic Layer (`semantic_models:`)
+> for all new metric definitions.
 
 For the full format reference see [`SEMANTIC_LAYER_FORMATS.md`](../SEMANTIC_LAYER_FORMATS.md).
 

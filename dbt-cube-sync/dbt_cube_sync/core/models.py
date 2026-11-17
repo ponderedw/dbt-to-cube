@@ -166,6 +166,7 @@ class CubeDimension(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     primary_key: bool = False
+    public: Optional[bool] = None
 
 
 class CubeMeasure(BaseModel):

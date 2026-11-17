@@ -163,7 +163,11 @@ class DbtParser:
         """
         nodes: Dict[str, dict] = {}
         for sm_id, sm_data in self.manifest.get('semantic_models', {}).items():
-            nodes[sm_id] = {
+            # Use the same synthetic key format as MetricFlowParser so state
+            # node_ids always match: semantic_model.<name>.<name>
+            sm_name = sm_data.get('name') or sm_id.rsplit('.', 1)[-1]
+            synthetic_id = f"semantic_model.{sm_name}.{sm_name}"
+            nodes[synthetic_id] = {
                 'checksum': {'checksum': ''},
                 'config': {'meta': sm_data},
             }
