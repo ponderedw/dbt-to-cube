@@ -22,7 +22,7 @@ dbt version differences in the Jinja context. All three formats work:
 |--------|--------|-------------|
 | `config.meta.metrics` | `DbtParser` | Any |
 | MetricFlow v1 standalone (`semantic_models:` + `metrics:` YAML) | `MetricFlowParser` | 1.5–1.11 |
-| MetricFlow v2 inline (metrics nested under model) | `MetricFlowParser` | 1.9+, dbt-fusion 2.x |
+| MetricFlow v2 inline (metrics nested under model) | `MetricFlowParser` | dbt 1.9+, dbt-fusion 2.x |
 
 For the full format reference see [`SEMANTIC_LAYER_FORMATS.md`](../SEMANTIC_LAYER_FORMATS.md).
 
@@ -31,6 +31,23 @@ For the full format reference see [`SEMANTIC_LAYER_FORMATS.md`](../SEMANTIC_LAYE
 - ✅ **Apache Superset** - Full implementation
 - 🚧 **Tableau** - Placeholder (coming soon)
 - 🚧 **PowerBI** - Placeholder (coming soon)
+
+## Supported MetricFlow Aggregation Types
+
+| MetricFlow `agg` | Cube.js type | SQL generated |
+|---|---|---|
+| `sum` | `sum` | column expression |
+| `avg` / `average` | `avg` | column expression |
+| `count` | `count` | column expression |
+| `count_distinct` | `countDistinct` | column expression |
+| `count_distinct_approx` | `countDistinctApprox` | column expression |
+| `min` / `max` | `min` / `max` | column expression |
+| `median` | `number` | `MEDIAN(col)` |
+| `sum_boolean` | `sum` | `CASE WHEN col THEN 1 ELSE 0 END` |
+| `percentile` | `number` | `PERCENTILE_CONT/DISC(val) WITHIN GROUP (ORDER BY col)` — reads `agg_params.percentile` and `use_discrete_percentile` |
+
+**Conversion metrics** (`type: conversion`) are mapped to a `number` ratio:
+`${conversion_measure} / NULLIF(${base_measure}, 0)` with `format: 'percent'`.
 
 ## Installation
 
@@ -144,6 +161,9 @@ connectors:
 | `sync-all` | **Ultimate command** - Incremental sync: dbt → Cube.js → Superset → RAG |
 | `dbt-to-cube` | Generate Cube.js schemas from dbt models (with incremental support) |
 | `cube-to-bi` | Sync Cube.js schemas to BI tools (Superset, Tableau, PowerBI) |
+| `validate-cubes` | Pre-merge CI validation: generate cubes + test via real Cube.js instance |
+| `compare-state` | Compare local manifest checksums against production state |
+| `align-ci-manifest` | Align CI manifest with dbt Cloud artifacts |
 
 ---
 
@@ -186,8 +206,12 @@ dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output --force
 | `--superset-password` | No | Superset password |
 | `--cube-connection-name` | No | Cube database name in Superset (default: `Cube`) |
 | `--rag-api-url` | No | RAG API URL for embedding updates |
+| `--s3-bucket` | No | S3 bucket to push cube files after generation. Env: `CUBEJS_SCHEMA_S3_BUCKET` |
+| `--s3-prefix` | No | S3 key prefix (default: `cubes`). Env: `CUBEJS_SCHEMA_S3_PREFIX` |
 
 *Either `--catalog` or `--sqlalchemy-uri` is required.
+
+> **S3 schema push**: when `--s3-bucket` is set, `sync-all` uploads all generated `.js` files and a `.schema-version` timestamp to S3. The dwe_cube `cube.js` reads schemas directly from S3 when `CUBEJS_SCHEMA_S3_BUCKET` is configured — no SSH to the server needed to push schema updates. Requires `boto3` (`pip install boto3`).
 
 **How Incremental Sync Works:**
 1. Reads state file (`.dbt-cube-sync-state.json`) with model checksums
@@ -195,6 +219,79 @@ dbt-cube-sync sync-all -m manifest.json -c catalog.json -o ./cube_output --force
 3. Only processes **added** or **modified** models
 4. Deletes Cube.js files for **removed** models
 5. Updates state file with new checksums
+
+---
+
+---
+
+### `validate-cubes` (CI validation)
+
+Validates generated Cube.js schemas by spinning up a real Cube.js Docker instance and running test queries against each cube. Designed for use in CI pre-merge checks.
+
+Automatically handles:
+- **Incremental mode** via `--state-path`: only validates models that changed
+- **Dev schema override** via `--dev-schema`: when dbt Cloud built models in a dev target that differs from the manifest schema
+
+```bash
+# Full validation (all models):
+dbt-cube-sync validate-cubes \
+  -m manifest.json \
+  -s "redshift+psycopg2://user:pass@host:5439/db" \
+  -o /tmp/cube_test
+
+# CI incremental + dev schema (changed models only):
+dbt-cube-sync validate-cubes \
+  -m /tmp/manifest.json \
+  -s "redshift+psycopg2://$DB_USER:$DB_PASS@$DB_HOST:5439/$DB_NAME" \
+  --state-path /tmp/prod_state.json \
+  --dev-schema "$CUBE_DEV_SCHEMA" \
+  -o /tmp/cube_test \
+  --ci-mode
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--manifest, -m` | — | dbt manifest.json path |
+| `--sqlalchemy-uri, -s` | — | DB URI (auto-parsed for Cube.js config) |
+| `--catalog, -c` | — | dbt catalog.json (alternative to URI) |
+| `--state-path` | — | Production state file (enables incremental mode) |
+| `--output, -o` | — | Output dir for temp cube files |
+| `--dev-schema` | — | Schema override for changed/new models. Env: `CUBE_DEV_SCHEMA` |
+| `--ci-mode` | `false` | Skip output-file existence checks (CI default) |
+| `--cube-image` | `cubejs/cube:latest` | Cube.js Docker image |
+| `--port` | `4100` | Local port for Cube.js |
+| `--timeout` | `180` | Seconds to wait for Cube.js ready |
+| `--db-type` | — | Env: `CUBEJS_DB_TYPE` |
+| `--db-host/name/user/pass/port` | — | Env: `CUBEJS_DB_*` |
+
+**Output example:**
+```
+══════════════════════════════════════════════════════════════
+CUBE VALIDATION RESULTS
+══════════════════════════════════════════════════════════════
+
+  ✓ Orders                                   PASSED  (1 measure(s) tested, 5 dim(s))
+  ✓ Customers                                PASSED  (1 measure(s) tested, 4 dim(s))
+  ✗ Products                                 FAILED
+  ✗ Revenue                                  FAILED
+
+──────────────────────────────────────────────────────────────
+FAILURES (2)
+──────────────────────────────────────────────────────────────
+
+  Cube:   Products
+  Query:  {"measures": ["Products.total_revenue"], "limit": 1}
+  Error:  Error: table "analytics.products" doesn't exist
+
+  Cube:   Revenue
+  Query:  {"measures": ["Revenue.total"], "limit": 1}
+  Error:  SQL execution failed: column "amount" does not exist
+
+══════════════════════════════════════════════════════════════
+RESULT: 2/4 passed, 2 FAILED
+══════════════════════════════════════════════════════════════
+```
 
 ---
 
@@ -298,6 +395,7 @@ dbt-cube-sync/
 │   │   ├── dbt_parser.py     # dbt manifest parser
 │   │   ├── db_inspector.py   # Database column type inspector (SQLAlchemy)
 │   │   ├── cube_generator.py # Cube.js generator
+│   │   ├── cube_validator.py # Docker-based Cube.js schema validator
 │   │   └── models.py         # Pydantic data models
 │   └── connectors/
 │       ├── base.py           # Abstract base connector

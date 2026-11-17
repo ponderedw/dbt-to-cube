@@ -35,13 +35,14 @@ class MetricFlowDimension(BaseModel):
 class MetricFlowMeasure(BaseModel):
     """Base aggregation defined in a MetricFlow semantic model"""
     name: str
-    agg: str  # sum, avg, count, count_distinct, min, max
+    agg: str  # sum, avg, count, count_distinct, min, max, median, sum_boolean, percentile
     expr: Optional[str] = None
     description: Optional[str] = None
     label: Optional[str] = None
     agg_time_dimension: Optional[str] = None
     filter: Optional[str] = None  # MetricFlow filter expression
     format: Optional[str] = None  # format hint, e.g. "percent", "currency"
+    agg_params: Optional[Dict[str, Any]] = None  # extra agg parameters, e.g. percentile value
 
 
 class MetricFlowSemanticModel(BaseModel):
@@ -78,6 +79,8 @@ class MetricFlowTypeParams(BaseModel):
     metric_aggregation_params: Optional[Dict[str, Any]] = None
     # NEW dbt 1.12.0 format: cumulative type parameters
     cumulative_type_params: Optional[Dict[str, Any]] = None
+    # conversion metric parameters
+    conversion_type_params: Optional[Dict[str, Any]] = None
 
 
 class MetricFlowMetric(BaseModel):
@@ -85,7 +88,7 @@ class MetricFlowMetric(BaseModel):
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
-    type: str  # simple, derived, ratio, cumulative
+    type: str  # simple, derived, ratio, cumulative, conversion
     type_params: MetricFlowTypeParams
     filter: Optional[str] = None  # MetricFlow filter expression
     format: Optional[str] = None  # format hint, e.g. "percent", "currency"
@@ -152,6 +155,7 @@ class DbtModel(BaseModel):
     metrics: Dict[str, DbtMetric]
     pre_aggregations: Dict[str, DbtPreAggregation] = {}
     joins: List[CubeJoin] = []
+    access_policy: List[Dict[str, Any]] = []  # raw 1:1 from config.meta.cube_access_policy
 
 
 class CubeDimension(BaseModel):
@@ -202,6 +206,18 @@ class CubeSchema(BaseModel):
     measures: List[CubeMeasure]
     pre_aggregations: List[CubePreAggregation] = []
     joins: List[CubeJoin] = []
+    access_policy: List[Dict[str, Any]] = []  # raw 1:1 from config.meta.cube_access_policy
+
+
+class CubeViewSchema(BaseModel):
+    """A Cube.js view — combines measures from multiple cubes for cross-model metrics."""
+    view_name: str
+    description: str = ''
+    # [{join_path: str, prefix: bool, includes: [str]}]
+    cubes: List[Dict[str, Any]] = []
+    # View-level measures with multi_stage: true
+    measures: List[Dict[str, Any]] = []
+    access_policy: List[Dict[str, Any]] = []
 
 
 class SyncResult(BaseModel):

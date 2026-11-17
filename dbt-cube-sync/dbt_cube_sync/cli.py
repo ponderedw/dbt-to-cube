@@ -4,8 +4,12 @@ CLI interface for dbt-cube-sync tool
 import click
 import os
 import sys
+import datetime
+import time
+import yaml
+import requests as _requests
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 from .core.dbt_parser import DbtParser
 from .core.cube_generator import CubeGenerator
@@ -15,6 +19,267 @@ from .config import Config
 
 # Import connectors to register them
 from .connectors import superset, tableau, powerbi
+
+
+def _load_deployed_file_hashes(
+    s3_bucket: Optional[str] = None,
+    s3_prefix: str = 'cubes',
+    deployed_dir: Optional[str] = None,
+) -> Dict[str, str]:
+    """Return {filename: sha256_hex} for all .yaml files in the deployed state.
+
+    Pass either s3_bucket (reads from S3) or deployed_dir (reads from disk).
+    """
+    import hashlib
+
+    hashes: Dict[str, str] = {}
+
+    if s3_bucket:
+        try:
+            import boto3
+        except ImportError:
+            raise click.ClickException("boto3 required: pip install boto3")
+        s3 = boto3.client('s3')
+        prefix = s3_prefix.rstrip('/') + '/'
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.yaml'):
+                    filename = Path(key).name
+                    content = s3.get_object(Bucket=s3_bucket, Key=key)['Body'].read()
+                    hashes[filename] = hashlib.sha256(content).hexdigest()
+    elif deployed_dir:
+        for yaml_file in Path(deployed_dir).glob('*.yaml'):
+            hashes[yaml_file.name] = hashlib.sha256(yaml_file.read_bytes()).hexdigest()
+
+    return hashes
+
+
+def _diff_cube_files(
+    generated_dir: str,
+    deployed_hashes: Dict[str, str],
+) -> tuple:
+    """Compare generated cube files against deployed hashes.
+
+    Returns (added, modified, removed) — sets of cube name strings (no .yaml extension).
+    """
+    import hashlib
+
+    generated: Dict[str, str] = {}
+    for yaml_file in Path(generated_dir).glob('*.yaml'):
+        generated[yaml_file.name] = hashlib.sha256(yaml_file.read_bytes()).hexdigest()
+
+    gen_names = set(generated)
+    dep_names = set(deployed_hashes)
+
+    added = {f[:-5] for f in gen_names - dep_names}      # in new, not in deployed
+    removed = {f[:-5] for f in dep_names - gen_names}    # in deployed, not in new
+    modified = {
+        f[:-5] for f in gen_names & dep_names
+        if generated[f] != deployed_hashes[f]
+    }
+    return added, modified, removed
+
+
+def _fetch_cube_api_meta(cube_api_url: str, cube_api_secret: str = '') -> Dict[str, dict]:
+    """Return {cube_name: cube_info} from the Cube.js /meta API."""
+    url = cube_api_url.rstrip('/') + '/cubejs-api/v1/meta'
+    headers = {'Authorization': f'Bearer {cube_api_secret}'} if cube_api_secret else {}
+    resp = _requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return {c['name']: c for c in resp.json().get('cubes', [])}
+
+
+def _diff_api_states(
+    old_meta: Dict[str, dict],
+    new_meta: Dict[str, dict],
+) -> Tuple[Set[str], Set[str], Set[str], Dict[str, List[str]]]:
+    """Compare two Cube.js /meta snapshots (old vs new deployed state).
+
+    Returns (added, modified, removed, diffs):
+    - added:    cube names in new_meta but not old_meta
+    - modified: cube names in both with structural differences
+    - removed:  cube names in old_meta but not new_meta
+    - diffs:    {cube_name: [human-readable diff lines]}
+
+    Dimension types ARE compared (both sides use the same /meta convention).
+    Measure types are NOT compared — /meta returns "number" for all aggregates.
+    """
+    added = set(new_meta) - set(old_meta)
+    removed = set(old_meta) - set(new_meta)
+    modified: Set[str] = set()
+    diffs: Dict[str, List[str]] = {}
+
+    for name in set(old_meta) & set(new_meta):
+        old = old_meta[name]
+        new = new_meta[name]
+
+        old_dims = {d['name'].split('.')[-1]: d.get('type', 'string') for d in old.get('dimensions', [])}
+        new_dims = {d['name'].split('.')[-1]: d.get('type', 'string') for d in new.get('dimensions', [])}
+
+        # Measure names only — /meta returns "number" for all aggregation types
+        old_meas = {m['name'].split('.')[-1] for m in old.get('measures', [])}
+        new_meas = {m['name'].split('.')[-1] for m in new.get('measures', [])}
+
+        cube_diffs: List[str] = []
+
+        for d in sorted(new_dims.keys() - old_dims.keys()):
+            cube_diffs.append(f"    + dimension {d} ({new_dims[d]})")
+        for d in sorted(old_dims.keys() - new_dims.keys()):
+            cube_diffs.append(f"    - dimension {d} ({old_dims[d]})")
+        for d in sorted(old_dims.keys() & new_dims.keys()):
+            if old_dims[d] != new_dims[d]:
+                cube_diffs.append(f"    ~ dimension {d}: {old_dims[d]} → {new_dims[d]}")
+
+        for m in sorted(new_meas - old_meas):
+            cube_diffs.append(f"    + measure {m}")
+        for m in sorted(old_meas - new_meas):
+            cube_diffs.append(f"    - measure {m}")
+
+        if cube_diffs:
+            modified.add(name)
+            diffs[name] = cube_diffs
+
+    return added, modified, removed, diffs
+
+
+def _diff_yaml_states(
+    old_yaml: Dict[str, dict],
+    new_yaml: Dict[str, dict],
+) -> Dict[str, List[str]]:
+    """Diff pre-aggregations and access policies between two YAML cube states.
+
+    Returns {cube_name: [diff lines]} for cubes with pre-agg or policy changes.
+    /meta does not expose pre-aggregations or access policies, so YAML is the
+    only source of truth for these.
+    """
+    all_names = set(old_yaml) | set(new_yaml)
+    result: Dict[str, List[str]] = {}
+
+    for name in sorted(all_names):
+        old = old_yaml.get(name, {})
+        new = new_yaml.get(name, {})
+        lines: List[str] = []
+
+        # Pre-aggregations
+        old_pas = {pa['name']: pa for pa in old.get('pre_aggregations', [])}
+        new_pas = {pa['name']: pa for pa in new.get('pre_aggregations', [])}
+        for pa_name in sorted(new_pas.keys() - old_pas.keys()):
+            lines.append(f"    + pre_aggregation {pa_name} ({new_pas[pa_name].get('type', '?')})")
+        for pa_name in sorted(old_pas.keys() - new_pas.keys()):
+            lines.append(f"    - pre_aggregation {pa_name} ({old_pas[pa_name].get('type', '?')})")
+        for pa_name in sorted(old_pas.keys() & new_pas.keys()):
+            if old_pas[pa_name] != new_pas[pa_name]:
+                lines.append(f"    ~ pre_aggregation {pa_name} changed")
+
+        # Access policies
+        def _policy_key(p: dict, i: int) -> str:
+            return p.get('group') or p.get('groups', [str(i)])[0] if isinstance(p.get('groups'), list) else str(i)
+        old_groups = {_policy_key(p, i) for i, p in enumerate(old.get('access_policy', []))}
+        new_groups = {_policy_key(p, i) for i, p in enumerate(new.get('access_policy', []))}
+        for g in sorted(new_groups - old_groups):
+            lines.append(f"    + access_policy group={g}")
+        for g in sorted(old_groups - new_groups):
+            lines.append(f"    - access_policy group={g}")
+
+        if lines:
+            result[name] = lines
+
+    return result
+
+
+def _query_cube_via_api(
+    cube_name: str,
+    cube_info: dict,
+    cube_api_url: str,
+    cube_api_secret: str = '',
+) -> Tuple[bool, str]:
+    """Run a minimal test query against a cube via the Cube.js load API.
+
+    Uses the first available measure with limit=1.  Returns (passed, detail).
+    """
+    measures = [m['name'] for m in cube_info.get('measures', [])]
+    if not measures:
+        return True, 'no measures (skipped)'
+
+    url = cube_api_url.rstrip('/') + '/cubejs-api/v1/load'
+    headers = {'Content-Type': 'application/json'}
+    if cube_api_secret:
+        headers['Authorization'] = f'Bearer {cube_api_secret}'
+
+    last_error = ''
+    for measure_name in measures:
+        if '.' not in measure_name:
+            measure_name = f'{cube_name}.{measure_name}'
+
+        payload = {'query': {'measures': [measure_name], 'limit': 1}}
+        max_retries = 10
+        retry_delay = 5
+
+        for _ in range(max_retries):
+            try:
+                resp = _requests.post(url, json=payload, headers=headers, timeout=60)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    error = body.get('error', '')
+                    if error == 'Continue wait':
+                        time.sleep(retry_delay)
+                        continue
+                    if error:
+                        last_error = error
+                        break  # try next measure
+                    rows = len(body.get('data', []))
+                    return True, f'{rows} row(s) via {measure_name.split(".")[-1]}'
+                else:
+                    try:
+                        last_error = resp.json().get('error', resp.text[:200])
+                    except Exception:
+                        last_error = resp.text[:200]
+                    break  # try next measure
+            except Exception as e:
+                last_error = str(e)
+                break
+
+    return False, last_error
+
+
+def _upload_to_s3(output_dir: str, s3_bucket: str, s3_prefix: str) -> str:
+    """Upload generated Cube.js files to S3 and return the version string.
+
+    Requires boto3 (pip install boto3).  AWS credentials are resolved via the
+    standard boto3 chain (env vars, ~/.aws/credentials, IAM role, etc.).
+
+    Returns the schema version string written to S3.
+    """
+    try:
+        import boto3
+    except ImportError:
+        raise click.ClickException(
+            "boto3 is required for S3 upload. Install it with: pip install boto3"
+        )
+
+    s3 = boto3.client('s3')
+    prefix = s3_prefix.rstrip('/') + '/' if s3_prefix else ''
+
+    output_path = Path(output_dir)
+    uploaded = 0
+    for yaml_file in output_path.glob('*.yaml'):
+        s3_key = f"{prefix}{yaml_file.name}"
+        s3.upload_file(str(yaml_file), s3_bucket, s3_key)
+        uploaded += 1
+
+    version = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    s3.put_object(
+        Bucket=s3_bucket,
+        Key=f"{prefix}.schema-version",
+        Body=version.encode(),
+        ContentType='text/plain',
+    )
+
+    click.echo(f"  Uploaded {uploaded} cube file(s) to s3://{s3_bucket}/{prefix}")
+    click.echo(f"  Schema version: {version}")
+    return version
 
 
 class CustomGroup(click.Group):
@@ -153,6 +418,7 @@ def dbt_to_cube(
 
         # Also include MetricFlow semantic models (if any)
         mf_models = parser.parse_metricflow_models()
+        mf_views = parser.parse_metricflow_views()
         if mf_models:
             click.echo(f"Found {len(mf_models)} MetricFlow semantic model(s)")
             # Avoid duplicates (model names already present via config.meta.metrics)
@@ -179,6 +445,9 @@ def dbt_to_cube(
         file_paths, output_checksums, changed_ids = generator.generate_cube_files(
             parsed_models, stored_checksums=stored_checksums
         )
+        view_paths = generator.generate_view_files(mf_views)
+        if view_paths:
+            click.echo(f"Generated {len(view_paths)} cross-model view(s)")
 
         click.echo(f"Processed {len(file_paths)} Cube.js files ({len(changed_ids)} changed):")
         for node_id, fp in file_paths.items():
@@ -205,51 +474,94 @@ def dbt_to_cube(
 
 @main.command()
 @click.argument('bi_tool', type=click.Choice(['superset', 'tableau', 'powerbi']))
-@click.option('--cube-files', '-c',
-              required=True,
-              help='Directory containing Cube.js metric files')
-@click.option('--url', '-u',
-              required=True,
-              help='BI tool URL (e.g., http://localhost:8088)')
-@click.option('--username', '-n',
-              required=True,
-              help='BI tool username')
-@click.option('--password', '-p',
-              required=True,
-              help='BI tool password')
-@click.option('--cube-connection-name', '-d',
-              default='Cube',
+@click.option('--url', '-u', required=True,
+              help='BI tool base URL (e.g., http://localhost:8088)')
+@click.option('--username', '-n', required=True, help='BI tool username')
+@click.option('--password', '-p', required=True, help='BI tool password')
+@click.option('--cube-connection-name', '-d', default='Cube',
               help='Name of the Cube database connection in the BI tool (default: Cube)')
-def cube_to_bi(bi_tool: str, cube_files: str, url: str, username: str, password: str, cube_connection_name: str):
-    """Sync Cube.js schemas to BI tool datasets"""
+# ── API-to-API mode (recommended) ────────────────────────────────────────────
+@click.option('--cube-api-url',
+              required=False, default=None,
+              envvar='CUBEJS_API_URL',
+              help='Cube.js API base URL (e.g., http://cube:4000). '
+                   'When set, fetches cube definitions directly from Cube API — '
+                   'no local files needed.  Creates, updates, and removes Superset '
+                   'datasets to match the live Cube.js state.')
+@click.option('--cube-api-secret',
+              required=False, default='',
+              envvar='CUBEJS_API_SECRET',
+              help='Cube.js API secret (passed as Bearer token)')
+# ── File-based mode (legacy) ──────────────────────────────────────────────────
+@click.option('--cube-files', '-c',
+              required=False, default=None,
+              help='Directory of local .js cube files (legacy mode; '
+                   'prefer --cube-api-url for API-to-API sync)')
+def cube_to_bi(
+    bi_tool: str,
+    url: str,
+    username: str,
+    password: str,
+    cube_connection_name: str,
+    cube_api_url: Optional[str],
+    cube_api_secret: str,
+    cube_files: Optional[str],
+):
+    """Sync Cube.js schemas to BI tool datasets.
+
+    API-TO-API MODE (recommended):
+
+      Fetches cube definitions directly from the Cube.js API, then creates,
+      updates, and deletes Superset datasets to match.  No local files needed.
+
+        dbt-cube-sync cube-to-bi superset \\
+          --cube-api-url http://cube:4000 \\
+          --cube-api-secret $CUBEJS_API_SECRET \\
+          --url http://superset:8088 \\
+          --username admin --password admin
+
+    FILE MODE (legacy):
+
+        dbt-cube-sync cube-to-bi superset --cube-files ./model/cubes ...
+    """
+    if not cube_api_url and not cube_files:
+        raise click.UsageError(
+            "Provide --cube-api-url (API-to-API mode) or --cube-files (legacy file mode)."
+        )
+
     try:
-        click.echo(f"🔄 Connecting to {bi_tool.title()} at {url}...")
-        
-        # Create connector config from command line params
-        connector_config = {
-            'url': url,
-            'username': username,
-            'password': password,
-            'database_name': cube_connection_name
-        }
-        
-        connector_instance = ConnectorRegistry.get_connector(bi_tool, **connector_config)
-        
-        click.echo(f"📊 Syncing Cube.js schemas to {bi_tool.title()}...")
-        results = connector_instance.sync_cube_schemas(cube_files)
-        
-        successful = sum(1 for r in results if r.status == 'success')
-        failed = sum(1 for r in results if r.status == 'failed')
-        
-        click.echo(f"✅ Sync complete: {successful} successful, {failed} failed")
-        
-        # Show detailed results
-        for result in results:
-            status_emoji = "✅" if result.status == 'success' else "❌"
-            click.echo(f"   {status_emoji} {result.file_or_dataset}: {result.message}")
-            
+        click.echo("=" * 62)
+        click.echo(f"CUBE-TO-BI: {bi_tool.upper()}")
+        click.echo("=" * 62)
+
+        connector = ConnectorRegistry.get_connector(
+            bi_tool,
+            url=url,
+            username=username,
+            password=password,
+            database_name=cube_connection_name,
+        )
+
+        if cube_api_url:
+            click.echo(f"\nMode: API-to-API  ({cube_api_url} → {url})")
+            results, _ = connector.sync_from_cube_api(
+                cube_api_url=cube_api_url,
+                cube_api_secret=cube_api_secret,
+            )
+        else:
+            click.echo(f"\nMode: file-based  ({cube_files} → {url})")
+            results = connector.sync_cube_schemas(cube_files)
+
+        ok = sum(1 for r in results if r.status == 'success')
+        fail = sum(1 for r in results if r.status == 'failed')
+        click.echo(f"\n{ok} succeeded, {fail} failed")
+        if fail:
+            sys.exit(1)
+
+    except click.UsageError:
+        raise
     except Exception as e:
-        click.echo(f"❌ Error: {str(e)}", err=True)
+        click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
 
 
@@ -262,155 +574,228 @@ def version():
 
 
 @main.command()
-@click.option('--manifest', '-m',
-              required=True,
-              help='Path to local dbt manifest.json file')
-@click.option('--state', '-s',
-              required=True,
-              help='Path to production state file (.dbt-cube-sync-state.json)')
-@click.option('--output', '-o',
-              required=False,
-              default=None,
-              help='Output path for JSON results file')
-@click.option('--fail-on-changes',
-              is_flag=True,
-              default=False,
-              help='Exit with code 2 if changes are detected (useful for CI)')
+@click.option('--manifest', '-m', required=True,
+              help='Path to dbt manifest.json')
+@click.option('--sqlalchemy-uri', '-s', required=False, default=None,
+              help='DB URI for column type resolution (required when using --s3-bucket / --deployed-dir)')
+@click.option('--catalog', '-c', required=False, default=None,
+              help='Path to dbt catalog.json (alternative to --sqlalchemy-uri)')
+# ── File-based comparison (new) ───────────────────────────────────────────────
+@click.option('--s3-bucket', required=False, default=None,
+              envvar='CUBEJS_SCHEMA_S3_BUCKET',
+              help='Compare generated cube files against files in this S3 bucket')
+@click.option('--s3-prefix', required=False, default='cubes',
+              envvar='CUBEJS_SCHEMA_S3_PREFIX',
+              help='S3 key prefix (default: cubes)')
+@click.option('--deployed-dir', required=False, default=None,
+              help='Compare generated cube files against this local directory')
+@click.option('--gen-output', required=False, default=None,
+              help='Where to write generated cube files (default: temp dir)')
+# ── Manifest-based comparison (legacy) ────────────────────────────────────────
+@click.option('--state', required=False, default=None,
+              help='Production state file (.dbt-cube-sync-state.json) — legacy mode')
+# ── Common ────────────────────────────────────────────────────────────────────
+@click.option('--output', '-o', required=False, default=None,
+              help='Write results to this JSON file')
+@click.option('--fail-on-changes', is_flag=True, default=False,
+              help='Exit with code 2 if changes are detected')
 def compare_state(
     manifest: str,
-    state: str,
+    sqlalchemy_uri: Optional[str],
+    catalog: Optional[str],
+    s3_bucket: Optional[str],
+    s3_prefix: str,
+    deployed_dir: Optional[str],
+    gen_output: Optional[str],
+    state: Optional[str],
     output: Optional[str],
-    fail_on_changes: bool
+    fail_on_changes: bool,
 ):
     """
-    Compare local manifest against production state to detect metric changes.
+    Detect which Cube.js schemas have changed.
 
-    This command compares checksums of dbt models with metrics between a local
-    manifest.json and a production state file to detect what has changed.
+    FILE-BASED MODE (recommended): pass --s3-bucket or --deployed-dir.
+      Generates all cube files from the manifest and compares their content
+      against the deployed state.  No state file needed — comparison is
+      purely based on file content hashes.  Catches changes from both dbt
+      model edits and template/generator code changes.
 
-    Useful for CI pipelines to determine if Cube.js schemas need regeneration.
+      dbt-cube-sync compare-state \\
+        -m manifest.json -s $DB_URI \\
+        --s3-bucket my-cube-bucket [--s3-prefix cubes]
 
-    Exit codes:
-      0 - No changes detected
-      1 - Error occurred
-      2 - Changes detected (only with --fail-on-changes)
+    LEGACY MODE: pass --state (production state file).
+      Compares dbt manifest checksums against a saved state file.
 
-    Examples:
+      dbt-cube-sync compare-state -m manifest.json --state prod_state.json
 
-      # Basic comparison
-      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json
-
-      # Output results to JSON file
-      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json -o changes.json
-
-      # For CI: exit with code 2 if changes detected
-      dbt-cube-sync compare-state -m target/manifest.json -s prod_state.json --fail-on-changes
+    Exit codes:  0 = no changes,  1 = error,  2 = changes (with --fail-on-changes)
     """
     import json
+    import tempfile
+
+    file_based = bool(s3_bucket or deployed_dir)
 
     try:
-        click.echo("=" * 60)
-        click.echo("COMPARE STATE: Detecting Metric Changes")
-        click.echo("=" * 60)
+        click.echo("=" * 62)
+        click.echo("COMPARE STATE")
+        click.echo("=" * 62)
 
-        # Load manifest
-        click.echo(f"\nLoading manifest from {manifest}...")
-        parser = DbtParser(manifest_path=manifest)
-        manifest_nodes = parser.get_manifest_nodes_with_metrics()
-        click.echo(f"  Found {len(manifest_nodes)} models with metrics in manifest")
+        if file_based:
+            # ── File-based mode ────────────────────────────────────────
+            if not sqlalchemy_uri and not catalog:
+                raise click.UsageError(
+                    "File-based comparison requires --sqlalchemy-uri or --catalog "
+                    "to generate cube files for comparison."
+                )
 
-        # Load production state
-        click.echo(f"\nLoading production state from {state}...")
-        state_manager = StateManager(state)
-
-        try:
-            with open(state, 'r') as f:
-                state_data = json.load(f)
-
-            # Convert to SyncState format if needed
-            from .core.models import SyncState
-            if state_data:
-                prod_state = SyncState.model_validate(state_data)
-                click.echo(f"  Found {len(prod_state.models)} models in production state")
-            else:
-                prod_state = None
-                click.echo("  Empty state file - treating all models as new")
-        except (FileNotFoundError, json.JSONDecodeError):
-            prod_state = None
-            click.echo("  No valid state found - treating all models as new")
-
-        # Compare checksums (skip output file checks since we're in CI without local files)
-        click.echo("\nComparing checksums...")
-        if prod_state:
-            added, modified, removed = state_manager.get_changed_models(
-                manifest_nodes, prod_state, check_output_files=False
+            click.echo(
+                f"\nMode: file-based diff against "
+                f"{'s3://' + s3_bucket + '/' + s3_prefix if s3_bucket else deployed_dir}"
             )
+
+            # Generate cube files
+            use_tmp = gen_output is None
+            tmp_dir = None
+            try:
+                if use_tmp:
+                    tmp_dir = tempfile.mkdtemp(prefix='dbt-cube-compare-')
+                    cubes_dir = str(Path(tmp_dir) / 'cubes')
+                else:
+                    cubes_dir = gen_output
+
+                Path(cubes_dir).mkdir(parents=True, exist_ok=True)
+
+                click.echo("\nGenerating cube files...")
+                parser = DbtParser(
+                    manifest_path=manifest,
+                    catalog_path=catalog,
+                    sqlalchemy_uri=sqlalchemy_uri,
+                )
+                models = parser.parse_models()
+                mf_models = parser.parse_metricflow_models()
+                mf_views = parser.parse_metricflow_views()
+                if mf_models:
+                    existing = {m.name for m in models}
+                    models += [m for m in mf_models if m.name not in existing]
+
+                generator = CubeGenerator('./cube/templates', cubes_dir)
+                file_paths, _, _ = generator.generate_cube_files(models)
+                generator.generate_view_files(mf_views)
+                click.echo(f"  Generated {len(file_paths)} cube file(s) + {len(mf_views)} view(s)")
+
+                # Load deployed state
+                click.echo("\nLoading deployed state...")
+                deployed_hashes = _load_deployed_file_hashes(
+                    s3_bucket=s3_bucket,
+                    s3_prefix=s3_prefix,
+                    deployed_dir=deployed_dir,
+                )
+                click.echo(f"  Found {len(deployed_hashes)} deployed file(s)")
+
+                # Diff
+                added, modified, removed = _diff_cube_files(cubes_dir, deployed_hashes)
+
+            finally:
+                if tmp_dir:
+                    import shutil
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            has_changes = bool(added or modified or removed)
+            result_extra: dict = {
+                'generated_count': len(file_paths),
+                'deployed_count': len(deployed_hashes),
+            }
+
         else:
-            added = set(manifest_nodes.keys())
-            modified = set()
-            removed = set()
+            # ── Legacy manifest-checksum mode ──────────────────────────
+            if not state:
+                raise click.UsageError(
+                    "Provide --s3-bucket / --deployed-dir for file-based comparison, "
+                    "or --state for legacy manifest-checksum comparison."
+                )
 
-        has_changes = bool(added or modified or removed)
+            click.echo(f"\nMode: manifest checksum diff against {state}")
+            click.echo(f"\nLoading manifest from {manifest}...")
+            parser_tmp = DbtParser(manifest_path=manifest)
+            manifest_nodes = parser_tmp.get_manifest_nodes_with_metrics()
+            click.echo(f"  Found {len(manifest_nodes)} models with metrics")
 
-        # Display results
-        click.echo("\n" + "=" * 60)
-        click.echo("CHANGE DETECTION RESULTS")
-        click.echo("=" * 60)
+            click.echo(f"\nLoading production state from {state}...")
+            sm = StateManager(state)
+            try:
+                with open(state, 'r') as f:
+                    state_data = json.load(f)
+                from .core.models import SyncState
+                prod_state = SyncState.model_validate(state_data) if state_data else None
+                click.echo(f"  Found {len(prod_state.models) if prod_state else 0} models in state")
+            except (FileNotFoundError, json.JSONDecodeError):
+                prod_state = None
+                click.echo("  No valid state found — treating all as new")
 
-        if added:
-            click.echo(f"\n✅ Added models ({len(added)}):")
-            for model_id in sorted(added):
-                model_name = model_id.split('.')[-1]
-                click.echo(f"    + {model_name}")
+            if prod_state:
+                added_raw, modified_raw, removed_raw = sm.get_changed_models(
+                    manifest_nodes, prod_state, check_output_files=False
+                )
+                # Convert node IDs to cube names for consistent output
+                added = {nid.split('.')[-1] for nid in added_raw}
+                modified = {nid.split('.')[-1] for nid in modified_raw}
+                removed = {nid.split('.')[-1] for nid in removed_raw}
+            else:
+                added = {nid.split('.')[-1] for nid in manifest_nodes}
+                modified = set()
+                removed = set()
 
-        if modified:
-            click.echo(f"\n🔄 Modified models ({len(modified)}):")
-            for model_id in sorted(modified):
-                model_name = model_id.split('.')[-1]
-                click.echo(f"    ~ {model_name}")
-
-        if removed:
-            click.echo(f"\n❌ Removed models ({len(removed)}):")
-            for model_id in sorted(removed):
-                model_name = model_id.split('.')[-1]
-                click.echo(f"    - {model_name}")
-
-        if not has_changes:
-            click.echo("\n✨ No changes detected in models with metrics")
-
-        click.echo("\n" + "=" * 60)
-
-        # Summary
-        click.echo(f"\nSummary:")
-        click.echo(f"  Total models in manifest: {len(manifest_nodes)}")
-        click.echo(f"  Total models in state:    {len(prod_state.models) if prod_state else 0}")
-        click.echo(f"  Added:    {len(added)}")
-        click.echo(f"  Modified: {len(modified)}")
-        click.echo(f"  Removed:  {len(removed)}")
-        click.echo(f"  Changes:  {'Yes' if has_changes else 'No'}")
-
-        # Write output JSON if requested
-        if output:
-            result = {
-                'has_changes': has_changes,
-                'added': list(added),
-                'modified': list(modified),
-                'removed': list(removed),
-                'added_count': len(added),
-                'modified_count': len(modified),
-                'removed_count': len(removed),
+            has_changes = bool(added or modified or removed)
+            result_extra = {
                 'manifest_model_count': len(manifest_nodes),
                 'state_model_count': len(prod_state.models) if prod_state else 0,
             }
+
+        # ── Print results ──────────────────────────────────────────────
+        click.echo("\n" + "─" * 62)
+        click.echo("CHANGE DETECTION RESULTS")
+        click.echo("─" * 62)
+
+        if added:
+            click.echo(f"\n  + Added   ({len(added)}):")
+            for name in sorted(added):
+                click.echo(f"      {name}")
+        if modified:
+            click.echo(f"\n  ~ Changed ({len(modified)}):")
+            for name in sorted(modified):
+                click.echo(f"      {name}")
+        if removed:
+            click.echo(f"\n  - Removed ({len(removed)}):")
+            for name in sorted(removed):
+                click.echo(f"      {name}")
+        if not has_changes:
+            click.echo("\n  No changes detected")
+
+        click.echo("\n" + "─" * 62)
+        click.echo(
+            f"  Added: {len(added)}  Changed: {len(modified)}  Removed: {len(removed)}"
+        )
+        click.echo("=" * 62)
+
+        # ── Write JSON ─────────────────────────────────────────────────
+        if output:
+            result_json = {
+                'has_changes': has_changes,
+                'added': sorted(added),
+                'modified': sorted(modified),
+                'removed': sorted(removed),
+                **result_extra,
+            }
             with open(output, 'w') as f:
-                json.dump(result, f, indent=2)
+                json.dump(result_json, f, indent=2)
             click.echo(f"\nResults written to {output}")
 
-        # Exit code based on changes
         if has_changes and fail_on_changes:
-            click.echo("\nExiting with code 2 (changes detected)")
             sys.exit(2)
 
+    except click.UsageError:
+        raise
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
@@ -454,10 +839,30 @@ def compare_state(
 @click.option('--cube-connection-name',
               default='Cube',
               help='Name of Cube database connection in Superset')
+@click.option('--cube-api-url',
+              required=False,
+              default=None,
+              envvar='CUBEJS_API_URL',
+              help='Cube.js API URL for Superset API-to-API sync (e.g. http://cube:4000)')
+@click.option('--cube-api-secret',
+              required=False,
+              default='',
+              envvar='CUBEJS_API_SECRET',
+              help='Cube.js API secret (passed as Bearer token)')
 @click.option('--rag-api-url',
               required=False,
               default=None,
               help='RAG API URL for embedding updates (e.g., http://localhost:8000)')
+@click.option('--s3-bucket',
+              required=False,
+              default=None,
+              envvar='CUBEJS_SCHEMA_S3_BUCKET',
+              help='S3 bucket to push generated cube files to (enables remote schema sync)')
+@click.option('--s3-prefix',
+              required=False,
+              default='cubes',
+              envvar='CUBEJS_SCHEMA_S3_PREFIX',
+              help='S3 key prefix for cube files (default: cubes)')
 def sync_all(
     manifest: str,
     catalog: Optional[str],
@@ -469,7 +874,11 @@ def sync_all(
     superset_username: Optional[str],
     superset_password: Optional[str],
     cube_connection_name: str,
-    rag_api_url: Optional[str]
+    cube_api_url: Optional[str],
+    cube_api_secret: str,
+    rag_api_url: Optional[str],
+    s3_bucket: Optional[str],
+    s3_prefix: str,
 ):
     """
     Ultimate sync command: dbt → Cube.js → BI tools → RAG embeddings.
@@ -555,7 +964,7 @@ def sync_all(
                     except OSError:
                         pass
 
-        # Remove stale .js files on force-full-sync
+        # Remove stale .yaml files on force-full-sync
         if force_full_sync:
             output_path = Path(output)
             if output_path.exists():
@@ -563,7 +972,7 @@ def sync_all(
                     CubeGenerator._to_pascal_case(node_data.get("name", ""))
                     for node_data in manifest_nodes.values()
                 }
-                for stale_file in output_path.glob("*.js"):
+                for stale_file in output_path.glob("*.yaml"):
                     if stale_file.stem not in expected_stems:
                         stale_file.unlink()
 
@@ -580,10 +989,12 @@ def sync_all(
         output_checksums: Dict[str, str] = {}
         changed_ids: Set[str] = set()
         cube_sync_error = None
+        parsed_models: list = []
         try:
             parsed_models = parser.parse_models()
 
             mf_models = parser.parse_metricflow_models()
+            mf_views = parser.parse_metricflow_views()
             if mf_models:
                 existing_names = {m.name for m in parsed_models}
                 parsed_models += [m for m in mf_models if m.name not in existing_names]
@@ -593,7 +1004,8 @@ def sync_all(
                 file_paths, output_checksums, changed_ids = generator.generate_cube_files(
                     parsed_models, stored_checksums=stored_checksums
                 )
-                if changed_ids:
+                generator.generate_view_files(mf_views)
+                if changed_ids or mf_views:
                     changes_detected = True
                 click.echo(f"  Processed {len(file_paths)} Cube.js files ({len(changed_ids)} changed)")
         except Exception as e:
@@ -618,6 +1030,19 @@ def sync_all(
         if cube_sync_error:
             click.echo(f"  Error during cube generation: {cube_sync_error}", err=True)
 
+        # ============================================================
+        # STEP 1.5: Push to S3 (if configured)
+        # ============================================================
+        if s3_bucket and file_paths:
+            click.echo("\n[S3] Pushing schemas to S3")
+            click.echo("-" * 40)
+            try:
+                _upload_to_s3(output, s3_bucket, s3_prefix)
+            except Exception as e:
+                click.echo(f"  S3 upload failed: {e}", err=True)
+        elif s3_bucket:
+            click.echo("\n[S3] No files to push (no changes)")
+
         # Build a mapping from model name (file stem) to node_id for status updates
         model_name_to_node_id = {}
         for node_id in current_state.models.keys():
@@ -634,40 +1059,38 @@ def sync_all(
 
         if not superset_url or not superset_username or not superset_password:
             click.echo("  Skipped - no Superset credentials provided")
+        elif not cube_api_url:
+            click.echo("  Skipped - --cube-api-url required for Superset sync")
         else:
-            # Get models that need Superset sync (status is None or 'failed')
             models_to_sync_ids = state_manager.get_models_needing_sync(current_state, 'superset')
 
             if not models_to_sync_ids and not force_full_sync:
                 click.echo("  Skipped - all models already synced successfully")
             else:
-                # Convert node_ids to model names for filtering
                 models_to_sync_names = set()
                 for node_id in models_to_sync_ids:
                     if node_id in current_state.models:
-                        output_file = current_state.models[node_id].output_file
-                        model_name = Path(output_file).stem
+                        model_name = Path(current_state.models[node_id].output_file).stem
                         models_to_sync_names.add(model_name)
 
                 try:
-                    connector_config = {
-                        'url': superset_url,
-                        'username': superset_username,
-                        'password': superset_password,
-                        'database_name': cube_connection_name
-                    }
+                    connector = ConnectorRegistry.get_connector(
+                        'superset',
+                        url=superset_url,
+                        username=superset_username,
+                        password=superset_password,
+                        database_name=cube_connection_name,
+                    )
 
-                    connector = ConnectorRegistry.get_connector('superset', **connector_config)
+                    models_filter = None if force_full_sync else (models_to_sync_names or None)
+                    results, dataset_map = connector.sync_from_cube_api(
+                        cube_api_url=cube_api_url,
+                        cube_api_secret=cube_api_secret,
+                        models_filter=models_filter,
+                    )
 
-                    if force_full_sync:
-                        results = connector.sync_cube_schemas(output)
-                    else:
-                        results = connector.sync_cube_schemas(output, models_to_sync_names)
-
-                    # Update per-model status
                     for r in results:
-                        model_name = r.file_or_dataset.replace('.js', '')
-                        node_id = model_name_to_node_id.get(model_name)
+                        node_id = model_name_to_node_id.get(r.file_or_dataset)
                         if node_id:
                             state_manager.update_model_sync_status(
                                 current_state, node_id, 'superset',
@@ -678,9 +1101,24 @@ def sync_all(
                     failed = sum(1 for r in results if r.status == 'failed')
                     click.echo(f"  Synced: {successful} successful, {failed} failed")
 
+                    # Sync RLS rules if any model has superset_rls configured
+                    try:
+                        access_policies = {
+                            CubeGenerator._to_pascal_case(m.name): m.access_policy
+                            for m in parsed_models
+                            if any(
+                                (p.get('row_level') or {}).get('filters')
+                                for p in (m.access_policy or [])
+                            )
+                        }
+                        if access_policies:
+                            click.echo("\n  → Syncing RLS rules")
+                            connector.sync_rls(access_policies, dataset_map)
+                    except Exception as rls_err:
+                        click.echo(f"  Warning: RLS sync failed: {rls_err}", err=True)
+
                 except Exception as e:
                     click.echo(f"  Error: {str(e)}", err=True)
-                    # Mark all models we tried to sync as failed
                     for node_id in models_to_sync_ids:
                         state_manager.update_model_sync_status(
                             current_state, node_id, 'superset', 'failed'
@@ -780,6 +1218,396 @@ def sync_all(
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
+
+
+@main.command()
+@click.option('--manifest', '-m', required=True,
+              help='Path to dbt manifest.json')
+@click.option('--sqlalchemy-uri', '-s', required=False, default=None,
+              help='DB connection URI for column type resolution')
+@click.option('--catalog', '-c', required=False, default=None,
+              help='Path to dbt catalog.json (alternative to sqlalchemy-uri)')
+@click.option('--output', '-o', required=True,
+              help='Output directory where cube YAML files are written')
+# ── API mode (recommended) ────────────────────────────────────────────────────
+@click.option('--cube-api-url', required=False, default=None,
+              envvar='CUBEJS_API_URL',
+              help='Running Cube.js API URL.  Generates YAMLs, diffs vs /meta, '
+                   'queries changed cubes.  No Docker needed.')
+@click.option('--cube-api-secret', required=False, default='',
+              envvar='CUBEJS_API_SECRET',
+              help='Cube.js API secret (Bearer token)')
+@click.option('--reload-wait', default=5, type=int, show_default=True,
+              help='Seconds to wait after writing YAMLs for Cube.js hot-reload (API mode)')
+# ── Docker mode (fallback) ────────────────────────────────────────────────────
+@click.option('--cube-image', default='cubejs/cube:latest', show_default=True,
+              help='Cube.js Docker image (Docker mode only)')
+@click.option('--port', default=4100, type=int, show_default=True,
+              help='Local port for Cube.js container (Docker mode only)')
+@click.option('--timeout', default=180, type=int, show_default=True,
+              help='Seconds to wait for Cube.js startup (Docker mode only)')
+@click.option('--db-type', envvar='CUBEJS_DB_TYPE', default=None)
+@click.option('--db-host', envvar='CUBEJS_DB_HOST', default=None)
+@click.option('--db-name', envvar='CUBEJS_DB_NAME', default=None)
+@click.option('--db-user', envvar='CUBEJS_DB_USER', default=None)
+@click.option('--db-pass', envvar='CUBEJS_DB_PASS', default=None)
+@click.option('--db-port', envvar='CUBEJS_DB_PORT', default=None)
+@click.option('--db-ssl', envvar='CUBEJS_DB_SSL', default='false')
+@click.option('--api-secret', envvar='CUBEJS_API_SECRET', default='ci-test-secret',
+              help='API secret for the Docker Cube.js instance (Docker mode only)')
+# ── Dev schema ────────────────────────────────────────────────────────────────
+@click.option('--dev-schema', required=False, default=None,
+              envvar='CUBE_DEV_SCHEMA',
+              help='Override DB schema in manifest (useful for CI dev target schemas)')
+def validate_cubes(
+    manifest: str,
+    sqlalchemy_uri: Optional[str],
+    catalog: Optional[str],
+    output: str,
+    cube_api_url: Optional[str],
+    cube_api_secret: str,
+    reload_wait: int,
+    cube_image: str,
+    port: int,
+    timeout: int,
+    db_type: Optional[str],
+    db_host: Optional[str],
+    db_name: Optional[str],
+    db_user: Optional[str],
+    db_pass: Optional[str],
+    db_port: Optional[str],
+    db_ssl: str,
+    api_secret: str,
+    dev_schema: Optional[str],
+):
+    """
+    Validate Cube.js schemas against a running Cube.js instance (or via Docker).
+
+    API MODE (recommended — no Docker):
+
+      Generates YAML cube files, writes them to --output, then diffs the
+      generated schema (dimensions/measures) against what the running Cube.js
+      /meta API reports.  Changed and new cubes are validated with a live query.
+      Checks for load errors (cubes missing from /meta after reload).
+
+        dbt-cube-sync validate-cubes \\
+          -m manifest.json -s $DB_URI \\
+          --output /path/to/cube/model/cubes \\
+          --cube-api-url http://cube:4000
+
+    DOCKER MODE (fallback — spins up Cube.js via Docker):
+
+        dbt-cube-sync validate-cubes \\
+          -m manifest.json -s $DB_URI \\
+          --output /tmp/cubes \\
+          --db-type redshift --db-host ... --db-user ... --db-pass ...
+    """
+    import json as _json
+    import tempfile
+
+    try:
+        click.echo("=" * 62)
+        click.echo("VALIDATE CUBES")
+        click.echo("=" * 62)
+
+        # ── Load + optionally patch manifest ──────────────────────────
+        with open(manifest) as f:
+            manifest_data = _json.load(f)
+
+        if dev_schema:
+            patched = 0
+            for node in manifest_data.get('nodes', {}).values():
+                node['schema'] = dev_schema
+                patched += 1
+            for sm_data in manifest_data.get('semantic_models', {}).values():
+                nr = sm_data.get('node_relation', {})
+                if isinstance(nr, dict):
+                    nr['schema_name'] = dev_schema
+                    nr['schema'] = dev_schema
+            click.echo(f"  Patched schema → '{dev_schema}' for all {patched} node(s)")
+
+        # ── Generate cube YAML files ───────────────────────────────────
+        output_path = Path(output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+            _json.dump(manifest_data, tf)
+            tmp_manifest_path = tf.name
+
+        try:
+            parser = DbtParser(
+                manifest_path=tmp_manifest_path,
+                catalog_path=catalog,
+                sqlalchemy_uri=sqlalchemy_uri,
+            )
+            models = parser.parse_models()
+            mf_models = parser.parse_metricflow_models()
+            mf_views = parser.parse_metricflow_views()
+            semantic_model_names = {m.name for m in mf_models}  # snake_case dbt names
+            if mf_models:
+                existing_names = {m.name for m in models}
+                models += [m for m in mf_models if m.name not in existing_names]
+        finally:
+            Path(tmp_manifest_path).unlink(missing_ok=True)
+
+        if not models:
+            click.echo("  No cube models found — nothing to validate.")
+            return
+
+        # ══════════════════════════════════════════════════════════════
+        # API MODE
+        # ══════════════════════════════════════════════════════════════
+        if cube_api_url:
+            click.echo(f"\n  Mode: API  ({cube_api_url})")
+
+            # ── Snapshot OLD state (before writing new YAMLs) ──────────
+            try:
+                old_meta = _fetch_cube_api_meta(cube_api_url, cube_api_secret)
+                click.echo(f"  Baseline Cube.js /meta: {len(old_meta)} cube(s)")
+            except Exception as e:
+                click.echo(f"  Baseline Cube.js /meta: unavailable ({e}) — treating as empty")
+                old_meta = {}
+
+            # Save old YAML state for pre-agg / access-policy diff (cubes + views)
+            old_yaml_state: Dict[str, dict] = {}
+            for yf in output_path.glob('*.yaml'):
+                data = yaml.safe_load(yf.read_text()) or {}
+                for cube in data.get('cubes', []):
+                    old_yaml_state[cube['name']] = cube
+                for view in data.get('views', []):
+                    old_yaml_state[view['name']] = view
+
+            # ── Generate and write new cube YAML files ─────────────────
+            generator = CubeGenerator('./cube/templates', str(output_path))
+            file_paths, _, _ = generator.generate_cube_files(models)
+            view_paths = generator.generate_view_files(mf_views)
+            click.echo(f"  Generated {len(file_paths)} cube(s) + {len(view_paths)} view(s) → {output_path}")
+
+            # Semantic models that failed to generate (e.g. no measures)
+            generated_node_ids = set(file_paths.keys())
+            semantic_not_generated = [
+                m for m in models
+                if m.name in semantic_model_names and m.node_id not in generated_node_ids
+            ]
+            if semantic_not_generated:
+                click.echo(f"  ⚠ Semantic models not generated: {[m.name for m in semantic_not_generated]}")
+
+            # ── Wait for hot-reload ────────────────────────────────────
+            if reload_wait > 0:
+                click.echo(f"  Waiting {reload_wait}s for Cube.js to reload schemas...")
+                time.sleep(reload_wait)
+
+            # ── Snapshot NEW state ─────────────────────────────────────
+            new_meta = _fetch_cube_api_meta(cube_api_url, cube_api_secret)
+            click.echo(f"  New Cube.js /meta: {len(new_meta)} cube(s)")
+
+            new_yaml_state: Dict[str, dict] = {}
+            for yf in output_path.glob('*.yaml'):
+                data = yaml.safe_load(yf.read_text()) or {}
+                for cube in data.get('cubes', []):
+                    new_yaml_state[cube['name']] = cube
+                for view in data.get('views', []):
+                    new_yaml_state[view['name']] = view
+
+            # ── Load error check ──────────────────────────────────────
+            # Anything generated but absent from /meta failed to load in Cube.js
+            load_errors = set(new_yaml_state) - set(new_meta)
+
+            # ── Semantic model completeness check ─────────────────────
+            # Every dbt semantic model must exist in the Cube API after deploy
+            semantic_cube_names = {
+                generator._to_pascal_case(name) for name in semantic_model_names
+            }
+            missing_semantic = semantic_cube_names - set(new_meta)
+
+            # ── API-to-API structural diff (dimensions + measures) ────
+            added, modified, removed, diffs = _diff_api_states(old_meta, new_meta)
+
+            # ── YAML diff (pre-aggregations + access policies) ────────
+            yaml_diffs = _diff_yaml_states(old_yaml_state, new_yaml_state)
+
+            # Merge YAML diffs into the report
+            for name, lines in yaml_diffs.items():
+                if name not in diffs:
+                    diffs[name] = []
+                diffs[name].extend(lines)
+                if name not in added and name not in modified:
+                    modified.add(name)
+
+            changed = added | modified
+
+            # ── Print diff report ──────────────────────────────────────
+            click.echo("\n" + "─" * 62)
+            click.echo("SCHEMA DIFF (old Cube API → new Cube API)")
+            click.echo("─" * 62)
+
+            if semantic_not_generated:
+                click.echo(f"\n  ✗ SEMANTIC MODELS NOT GENERATED ({len(semantic_not_generated)}):")
+                for m in semantic_not_generated:
+                    click.echo(f"      {m.name}")
+
+            if missing_semantic:
+                click.echo(f"\n  ✗ SEMANTIC MODELS MISSING FROM CUBE API ({len(missing_semantic)}):")
+                for name in sorted(missing_semantic):
+                    click.echo(f"      {name}")
+
+            if load_errors:
+                click.echo(f"\n  ✗ LOAD ERRORS — generated but absent from /meta ({len(load_errors)}):")
+                for name in sorted(load_errors):
+                    click.echo(f"      {name}")
+
+            if added:
+                click.echo(f"\n  + Added ({len(added)}):")
+                for name in sorted(added):
+                    click.echo(f"      {name}")
+
+            if modified:
+                click.echo(f"\n  ~ Modified ({len(modified)}):")
+                for name in sorted(modified):
+                    click.echo(f"      {name}")
+                    for line in diffs.get(name, []):
+                        click.echo(line)
+
+            if removed:
+                click.echo(f"\n  - Removed ({len(removed)}):")
+                for name in sorted(removed):
+                    click.echo(f"      {name}")
+
+            if not semantic_not_generated and not missing_semantic and not load_errors and not added and not modified and not removed:
+                click.echo("\n  No schema changes detected. All semantic models present in Cube API.")
+
+            # ── Query validation for changed/new cubes ─────────────────
+            if changed:
+                click.echo(f"\n{'─' * 62}")
+                click.echo(f"QUERY VALIDATION ({len(changed)} changed cube(s))")
+                click.echo("─" * 62 + "\n")
+
+                passed_count = 0
+                failed_count = 0
+                for name in sorted(changed):
+                    cube_info = new_meta.get(name, {})
+                    ok, detail = _query_cube_via_api(name, cube_info, cube_api_url, cube_api_secret)
+                    status = "✓ PASSED" if ok else "✗ FAILED"
+                    pad = max(0, 44 - len(name))
+                    click.echo(f"  {status}  {name}{' ' * pad}{detail}")
+                    if ok:
+                        passed_count += 1
+                    else:
+                        failed_count += 1
+
+                click.echo(f"\n{'─' * 62}")
+                click.echo(f"  RESULT: {passed_count}/{len(changed)} query checks passed")
+                if load_errors:
+                    click.echo(f"  LOAD ERRORS: {len(load_errors)} cube(s) failed to load")
+                click.echo("=" * 62)
+
+                if failed_count > 0 or load_errors or missing_semantic or semantic_not_generated:
+                    sys.exit(1)
+            else:
+                click.echo("\n" + "=" * 62)
+                if load_errors:
+                    click.echo(f"  LOAD ERRORS: {len(load_errors)} cube(s) failed to load")
+                if missing_semantic:
+                    click.echo(f"  MISSING: {len(missing_semantic)} semantic model(s) not in Cube API")
+                if semantic_not_generated:
+                    click.echo(f"  NOT GENERATED: {len(semantic_not_generated)} semantic model(s) skipped")
+                if load_errors or missing_semantic or semantic_not_generated:
+                    sys.exit(1)
+                else:
+                    click.echo("  No changed cubes — nothing to query-validate.")
+                click.echo("=" * 62)
+
+            return
+
+        # ══════════════════════════════════════════════════════════════
+        # DOCKER MODE (fallback)
+        # ══════════════════════════════════════════════════════════════
+        from .core.cube_validator import CubeValidator, print_validation_report
+
+        (output_path / 'model' / 'cubes').mkdir(parents=True, exist_ok=True)
+
+        db_config: dict = {
+            'CUBEJS_API_SECRET': api_secret,
+            'CUBEJS_DEV_MODE': 'true',
+        }
+        if db_type:
+            db_config['CUBEJS_DB_TYPE'] = db_type
+        if db_host:
+            db_config['CUBEJS_DB_HOST'] = db_host
+        if db_name:
+            db_config['CUBEJS_DB_NAME'] = db_name
+        if db_user:
+            db_config['CUBEJS_DB_USER'] = db_user
+        if db_pass:
+            db_config['CUBEJS_DB_PASS'] = db_pass
+        if db_port:
+            db_config['CUBEJS_DB_PORT'] = db_port
+        if db_ssl and db_ssl.lower() not in ('false', '0', ''):
+            db_config['CUBEJS_DB_SSL'] = 'true'
+        if sqlalchemy_uri and not all(
+            k in db_config for k in ('CUBEJS_DB_HOST', 'CUBEJS_DB_NAME')
+        ):
+            _parse_sqlalchemy_into_db_config(sqlalchemy_uri, db_config)
+
+        click.echo(f"\n  Mode: Docker  ({cube_image}, port {port})")
+        validator = CubeValidator(
+            output_dir=str(output_path),
+            db_config=db_config,
+            cube_image=cube_image,
+            port=port,
+            startup_timeout=timeout,
+        )
+        try:
+            validator.start()
+            click.echo(f"  Waiting for Cube.js to be ready (up to {timeout}s)...")
+            validator.wait_ready()
+            click.echo("  Cube.js is ready.\n")
+            meta = validator.get_meta()
+            results = validator.validate_all(meta)
+            all_passed = print_validation_report(results)
+        finally:
+            validator.stop()
+
+        if not all_passed:
+            sys.exit(1)
+
+    except Exception as e:
+        click.echo(f"\nError: {e}", err=True)
+        sys.exit(1)
+
+
+def _parse_sqlalchemy_into_db_config(uri: str, db_config: dict) -> None:
+    """Best-effort extraction of host/name/user/pass from a SQLAlchemy URI."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(uri)
+        scheme = parsed.scheme.split('+')[0].lower()
+        _SCHEME_MAP = {
+            'redshift': 'redshift',
+            'postgresql': 'postgres',
+            'postgres': 'postgres',
+            'snowflake': 'snowflake',
+            'bigquery': 'bigquery',
+            'mysql': 'mysql',
+            'trino': 'trino',
+            'presto': 'presto',
+        }
+        if scheme in _SCHEME_MAP and 'CUBEJS_DB_TYPE' not in db_config:
+            db_config['CUBEJS_DB_TYPE'] = _SCHEME_MAP[scheme]
+        if parsed.hostname and 'CUBEJS_DB_HOST' not in db_config:
+            db_config['CUBEJS_DB_HOST'] = parsed.hostname
+        if parsed.port and 'CUBEJS_DB_PORT' not in db_config:
+            db_config['CUBEJS_DB_PORT'] = str(parsed.port)
+        if parsed.username and 'CUBEJS_DB_USER' not in db_config:
+            db_config['CUBEJS_DB_USER'] = parsed.username
+        if parsed.password and 'CUBEJS_DB_PASS' not in db_config:
+            from urllib.parse import unquote
+            db_config['CUBEJS_DB_PASS'] = unquote(parsed.password)
+        db_path = parsed.path.lstrip('/')
+        if db_path and 'CUBEJS_DB_NAME' not in db_config:
+            db_config['CUBEJS_DB_NAME'] = db_path
+    except Exception:
+        pass
 
 
 @main.command()

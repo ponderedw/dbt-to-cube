@@ -58,12 +58,12 @@ class BaseConnector(ABC):
         pass
     
     def _get_cube_files(self, cube_dir: str) -> List[Path]:
-        """Get all .js files from the cube directory"""
+        """Get all .yaml files from the cube directory"""
         cube_path = Path(cube_dir)
         if not cube_path.exists():
             raise FileNotFoundError(f"Cube directory not found: {cube_dir}")
-        
-        return list(cube_path.glob("*.js"))
+
+        return list(cube_path.glob("*.yaml"))
     
     def get_connector_type(self) -> str:
         """Return the type of this connector"""

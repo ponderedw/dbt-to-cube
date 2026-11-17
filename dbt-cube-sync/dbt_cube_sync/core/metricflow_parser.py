@@ -29,6 +29,10 @@ from .models import (
 )
 
 # MetricFlow agg → Cube.js measure type
+# Agg types that need special SQL handling (not direct Cube.js type mappings):
+#   percentile  → type:number, sql: PERCENTILE_CONT/DISC(...) WITHIN GROUP (ORDER BY col)
+#   median      → type:number, sql: MEDIAN(col)   (most warehouses support this)
+#   sum_boolean → type:sum,    sql: CASE WHEN col THEN 1 ELSE 0 END
 _AGG_MAP: Dict[str, str] = {
     'sum': 'sum',
     'avg': 'avg',
@@ -38,7 +42,11 @@ _AGG_MAP: Dict[str, str] = {
     'count_distinct_approx': 'countDistinctApprox',
     'min': 'min',
     'max': 'max',
+    'median': 'number',
+    'sum_boolean': 'sum',
 }
+
+_SPECIAL_AGG_TYPES = frozenset({'median', 'sum_boolean', 'percentile'})
 
 # MetricFlow dimension type → SQL data type for Cube.js
 _DIM_TYPE_MAP: Dict[str, str] = {
@@ -47,18 +55,41 @@ _DIM_TYPE_MAP: Dict[str, str] = {
 }
 
 
+def _strip_entity_prefix(dim_path: str) -> str:
+    """'entity__col' → 'col', 'col' → 'col'.
+
+    MetricFlow uses 'entity__dimension' syntax in filter expressions to qualify
+    which semantic model a dimension belongs to.  Cube.js SQL only needs the
+    column name part (the entity context is implicit via ${CUBE}).
+    """
+    if '__' in dim_path:
+        return dim_path.split('__', 1)[1]
+    return dim_path
+
+
 def _convert_mf_filter_to_cube(filter_str: str) -> str:
     """Convert a MetricFlow where-filter expression to a Cube.js SQL fragment.
 
-    MetricFlow syntax         → Cube.js SQL
-    {{ Dimension('x') }}      → ${CUBE}.x
-    {{ TimeDimension('x', …) }}  → ${CUBE}.x
-    {{ Metric('x') }}         → ${x}
+    MetricFlow syntax                    → Cube.js SQL
+    {{ Dimension('entity__col') }}       → ${CUBE}.col
+    {{ Dimension('col') }}               → ${CUBE}.col
+    {{ TimeDimension('entity__col', …) }} → ${CUBE}.col
+    {{ Entity('entity_name') }}          → ${CUBE}.entity_name
+    {{ Metric('x') }}                    → ${x}
     """
     if not filter_str:
         return filter_str
-    result = re.sub(r"\{\{\s*Dimension\(['\"](\w+)['\"]\)\s*\}\}", r"${CUBE}.\1", filter_str)
-    result = re.sub(r"\{\{\s*TimeDimension\(['\"](\w+)['\"].*?\)\s*\}\}", r"${CUBE}.\1", result)
+    result = re.sub(
+        r"\{\{\s*Dimension\(['\"](\w+)['\"]\)\s*\}\}",
+        lambda m: f"${{CUBE}}.{_strip_entity_prefix(m.group(1))}",
+        filter_str,
+    )
+    result = re.sub(
+        r"\{\{\s*TimeDimension\(['\"](\w+)['\"].*?\)\s*\}\}",
+        lambda m: f"${{CUBE}}.{_strip_entity_prefix(m.group(1))}",
+        result,
+    )
+    result = re.sub(r"\{\{\s*Entity\(['\"](\w+)['\"]\)\s*\}\}", r"${CUBE}.\1", result)
     result = re.sub(r"\{\{\s*Metric\(['\"](\w+)['\"]\)\s*\}\}", r"${\1}", result)
     return result.strip()
 
@@ -79,6 +110,27 @@ def _map_dbt_format(format_str: Optional[str]) -> Optional[str]:
         return 'currency'
     # Pass other strings through (e.g. "0.00" for downstream BI)
     return fmt or None
+
+
+def _build_special_agg_sql(agg: str, expr: str, agg_params: Optional[dict]) -> tuple:
+    """Return (cube_type, sql_expr) for agg types that need custom SQL.
+
+    - median      → (number, MEDIAN(col))
+    - sum_boolean → (sum,    CASE WHEN col THEN 1 ELSE 0 END)
+    - percentile  → (number, PERCENTILE_CONT/DISC(val) WITHIN GROUP (ORDER BY col))
+    """
+    agg_lower = agg.lower()
+    if agg_lower == 'median':
+        return 'number', f'MEDIAN({expr})'
+    if agg_lower == 'sum_boolean':
+        return 'sum', f'CASE WHEN {expr} THEN 1 ELSE 0 END'
+    if agg_lower == 'percentile':
+        params = agg_params or {}
+        pct_value = params.get('percentile', 0.5)
+        use_discrete = params.get('use_discrete_percentile', False)
+        func = 'PERCENTILE_DISC' if use_discrete else 'PERCENTILE_CONT'
+        return 'number', f'{func}({pct_value}) WITHIN GROUP (ORDER BY {expr})'
+    return _AGG_MAP.get(agg_lower, 'sum'), expr
 
 
 def _extract_ref_name(model_ref: str) -> str:
@@ -304,6 +356,7 @@ class MetricFlowParser:
                 agg_time_dimension=m.get('agg_time_dimension'),
                 filter=filter_val,
                 format=m.get('format') or meta.get('format'),
+                agg_params=m.get('agg_params'),
             ))
         return out
 
@@ -328,6 +381,8 @@ class MetricFlowParser:
                 metric_aggregation_params=tp_raw.get('metric_aggregation_params'),
                 # NEW dbt 1.12.0 format: include cumulative_type_params
                 cumulative_type_params=tp_raw.get('cumulative_type_params'),
+                # conversion metric parameters
+                conversion_type_params=tp_raw.get('conversion_type_params'),
             )
             # dbt 1.12 moved meta from top-level to config.meta on metrics.
             # Support both locations for backward compatibility.
@@ -511,6 +566,22 @@ class MetricFlowParser:
             if base and base in measure_to_sm:
                 return measure_to_sm[base].name
 
+        elif metric.type == 'conversion':
+            # Resolve via the base_measure of the conversion
+            ctp = metric.type_params.conversion_type_params or {}
+            base_measure_ref = ctp.get('base_measure') or {}
+            base_name = base_measure_ref.get('name') if isinstance(base_measure_ref, dict) else base_measure_ref
+            if base_name:
+                if base_name in measure_to_sm:
+                    return measure_to_sm[base_name].name
+                ref_metric = metric_by_name.get(base_name)
+                if ref_metric:
+                    result = self._resolve_sm_for_metric(
+                        ref_metric, measure_to_sm, metric_by_name, _depth + 1
+                    )
+                    if result:
+                        return result
+
         return None
 
     @staticmethod
@@ -574,14 +645,20 @@ class MetricFlowParser:
         metrics: Dict[str, DbtMetric] = {}
 
         for measure in sm.measures:
-            cube_type = _AGG_MAP.get(measure.agg.lower(), 'sum')
+            agg_lower = measure.agg.lower()
+            raw_expr = measure.expr or measure.name
+            if agg_lower in _SPECIAL_AGG_TYPES:
+                cube_type, sql_expr = _build_special_agg_sql(agg_lower, raw_expr, measure.agg_params)
+            else:
+                cube_type = _AGG_MAP.get(agg_lower, 'sum')
+                sql_expr = raw_expr
             m_filters = None
             if measure.filter:
                 m_filters = [_convert_mf_filter_to_cube(measure.filter)]
             metrics[measure.name] = DbtMetric(
                 name=measure.name,
                 type=cube_type,
-                sql=measure.expr or measure.name,
+                sql=sql_expr,
                 title=measure.label or measure.name.replace('_', ' ').title(),
                 description=measure.description,
                 format=_map_dbt_format(measure.format),
@@ -797,6 +874,29 @@ class MetricFlowParser:
                 title=title,
                 description=metric.description,
                 format=fmt,
+                filters=cube_filters,
+            )
+
+        elif metric.type == 'conversion':
+            # Map to a conversion-rate number measure: conversion_count / NULLIF(base_count, 0)
+            ctp = metric.type_params.conversion_type_params or {}
+            base_ref = ctp.get('base_measure') or {}
+            conv_ref = ctp.get('conversion_measure') or {}
+            base_name = base_ref.get('name') if isinstance(base_ref, dict) else str(base_ref or '')
+            conv_name = conv_ref.get('name') if isinstance(conv_ref, dict) else str(conv_ref or '')
+            if base_name and conv_name:
+                sql_expr = f'${{{conv_name}}} / NULLIF(${{{base_name}}}, 0)'
+            elif conv_name:
+                sql_expr = f'${{{conv_name}}}'
+            else:
+                sql_expr = metric.name
+            return DbtMetric(
+                name=metric.name,
+                type='number',
+                sql=sql_expr,
+                title=title,
+                description=metric.description,
+                format=fmt or 'percent',
                 filters=cube_filters,
             )
 

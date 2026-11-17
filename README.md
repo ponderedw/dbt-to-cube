@@ -58,7 +58,18 @@ docker-compose logs -f dbt-cube-sync
 
 ## 🛠️ CLI Usage
 
-### Two Main Commands
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `dbt-to-cube` | Generate Cube.js schemas from dbt models |
+| `cube-to-bi` | Sync Cube.js schemas to BI tools |
+| `sync-all` | Incremental sync: dbt → Cube.js → Superset → RAG |
+| `validate-cubes` | Pre-merge CI validation: generate cubes + test via real Cube.js instance |
+| `compare-state` | Compare local manifest checksums against production state |
+| `align-ci-manifest` | Align CI manifest with dbt Cloud artifacts |
+
+### Main Commands
 
 #### 1. dbt-to-cube: Convert dbt models to Cube.js
 
@@ -196,6 +207,7 @@ models:
         agg: count
         expr: 1
         filter: "{{ Dimension('order__country') }} = 'US'"
+        # {{ Dimension('order__country') }} strips the entity prefix — `order__` is stripped, leaving ${CUBE}.country
         # compiles to: count(case when country = 'US' then 1 end)
 
 # Top-level advanced metrics (ratio, derived, cumulative)
@@ -234,6 +246,10 @@ metrics:
 | Measure filter | CASE WHEN in `expr:` | SQL in `sql:` field |
 | Cube.js joins | `entity: { type: foreign }` matching another SM's primary entity | `joins: { TargetCube: { sql, relationship } }` |
 | Pre-aggregations | `config.meta.pre_aggregations:` on the model | `pre_aggregations: { ... }` |
+| `median` measure | `agg: median` | `type: number, sql: MEDIAN(col)` |
+| `sum_boolean` measure | `agg: sum_boolean` | `type: sum, sql: CASE WHEN col THEN 1 ELSE 0 END` |
+| `percentile` measure | `agg: percentile` + `agg_params` | `type: number, sql: PERCENTILE_CONT(val) WITHIN GROUP (ORDER BY col)` |
+| Conversion metric | `type: conversion` | `type: number, sql: ${conv} / NULLIF(${base}, 0), format: percent` |
 
 ### Filter Patterns
 

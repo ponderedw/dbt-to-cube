@@ -1,14 +1,15 @@
 """
-Cube.js schema generator - creates Cube.js files from dbt models
+Cube.js schema generator - creates Cube.js YAML files from dbt models
 """
 import hashlib
 import os
 import re
+import yaml
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 from jinja2 import Environment, FileSystemLoader, Template
 
-from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey, CubeJoin
+from .models import DbtModel, CubeSchema, CubeDimension, CubeMeasure, CubePreAggregation, CubeRefreshKey, CubeJoin, CubeViewSchema
 from .dbt_parser import DbtParser
 
 
@@ -57,7 +58,7 @@ class CubeGenerator:
                 cube_schema = self._convert_model_to_cube(model)
                 content = self._render_cube_content(cube_schema)
                 checksum = hashlib.sha256(content.encode()).hexdigest()
-                file_path = self.output_dir / f"{cube_schema.cube_name}.js"
+                file_path = self.output_dir / f"{cube_schema.cube_name}.yaml"
 
                 stored = (stored_checksums or {}).get(model.node_id)
                 if not stored or stored != checksum or not file_path.exists():
@@ -74,7 +75,32 @@ class CubeGenerator:
                 print(f"  Error generating cube for {model.name}: {str(e)}")
 
         return file_paths, output_checksums, changed_node_ids
-    
+
+    def generate_view_files(self, views: List[CubeViewSchema]) -> List[str]:
+        """Write Cube.js view YAML files and return list of written file paths."""
+        written = []
+        for view in views:
+            content = self._generate_view_yaml(view)
+            file_path = self.output_dir / f"{view.view_name}.yaml"
+            file_path.write_text(content)
+            print(f"  Generated view: {file_path.name}")
+            written.append(str(file_path))
+        return written
+
+    def _generate_view_yaml(self, view: CubeViewSchema) -> str:
+        """Render a Cube.js view definition to YAML."""
+        view_def: Dict[str, Any] = {'name': view.view_name}
+        if view.description:
+            view_def['description'] = view.description
+        if view.cubes:
+            view_def['cubes'] = view.cubes
+        if view.measures:
+            view_def['measures'] = view.measures
+        if view.access_policy:
+            view_def['access_policy'] = view.access_policy
+        return yaml.dump({'views': [view_def]}, default_flow_style=False,
+                         allow_unicode=True, sort_keys=False)
+
     def _convert_model_to_cube(self, model: DbtModel) -> CubeSchema:
         """Convert a dbt model to a Cube.js schema"""
         
@@ -159,13 +185,14 @@ class CubeGenerator:
             measures=measures,
             pre_aggregations=pre_aggregations,
             joins=model.joins,
+            access_policy=model.access_policy,
         )
     
     def _render_cube_content(self, cube_schema: CubeSchema) -> str:
-        """Render a Cube.js schema to a string without writing to disk."""
-        template_path = self.template_dir / 'cube_template.js'
+        """Render a Cube.js YAML schema to a string without writing to disk."""
+        template_path = self.template_dir / 'cube_template.yaml'
         if template_path.exists():
-            template = self.env.get_template('cube_template.js')
+            template = self.env.get_template('cube_template.yaml')
             return template.render(
                 cube_name=cube_schema.cube_name,
                 sql=cube_schema.sql,
@@ -173,137 +200,97 @@ class CubeGenerator:
                 measures=cube_schema.measures,
                 pre_aggregations=cube_schema.pre_aggregations,
                 joins=cube_schema.joins,
+                access_policy=cube_schema.access_policy,
             )
-        return self._generate_cube_content(cube_schema)
+        return self._generate_cube_yaml(cube_schema)
     
-    def _generate_cube_content(self, cube_schema: CubeSchema) -> str:
-        """Generate Cube.js content using hardcoded template"""
-
-        # Extract table name from SQL for refresh_key replacement
-        import re
-        table_name_match = re.search(r'FROM\s+([^\s,;]+)', cube_schema.sql, re.IGNORECASE)
-        table_name = table_name_match.group(1) if table_name_match else None
-
-        # Generate dimensions
-        dimensions_content = []
-        for dim in cube_schema.dimensions:
-            dim_lines = [
-                f"      sql: `{dim.sql}`",
-                f"      type: `{dim.type}`",
-                f"      title: `{dim.title}`",
-            ]
-            if dim.primary_key:
-                dim_lines.append(f"      primaryKey: true")
-            if dim.description:
-                safe_desc = dim.description.replace('`', "'")
-                dim_lines.append(f"      description: `{safe_desc}`")
-            dim_content = f"    {dim.name}: {{\n" + ",\n".join(dim_lines) + "\n    }"
-            dimensions_content.append(dim_content)
-        
-        # Generate measures
-        measures_content = []
-        for measure in cube_schema.measures:
-            measure_lines = [
-                f"      type: `{measure.type}`",
-                f"      sql: `{measure.sql}`",
-                f"      title: `{measure.title}`",
-            ]
-            if measure.description:
-                safe_desc = measure.description.replace('`', "'")
-                measure_lines.append(f"      description: `{safe_desc}`")
-            if measure.format:
-                measure_lines.append(f"      format: `{measure.format}`")
-            if measure.filters:
-                filters_js = ', '.join(
-                    [f"{{ sql: `{f}` }}" for f in measure.filters]
-                )
-                measure_lines.append(f"      filters: [{filters_js}]")
-            measure_content = f"    {measure.name}: {{\n" + ",\n".join(measure_lines) + "\n    }"
-            measures_content.append(measure_content)
-        
-        # Generate pre-aggregations
-        pre_aggregations_content = []
-        for pre_agg in cube_schema.pre_aggregations:
-            pre_agg_parts = [f"      type: `{pre_agg.type}`"]
-            
-            if pre_agg.measures:
-                measures_list = ', '.join([f'CUBE.{measure}' for measure in pre_agg.measures])
-                pre_agg_parts.append(f"      measures: [{measures_list}]")
-
-            if pre_agg.dimensions:
-                dims_list = ', '.join([f'CUBE.{dim}' for dim in pre_agg.dimensions])
-                pre_agg_parts.append(f"      dimensions: [{dims_list}]")
-
-            if pre_agg.time_dimension:
-                pre_agg_parts.append(f"      time_dimension: CUBE.{pre_agg.time_dimension}")
-                
-            if pre_agg.granularity:
-                pre_agg_parts.append(f"      granularity: `{pre_agg.granularity}`")
-                
-            if pre_agg.refresh_key:
-                refresh_key_parts = []
-                if pre_agg.refresh_key.every:
-                    refresh_key_parts.append(f"        every: `{pre_agg.refresh_key.every}`")
-                if pre_agg.refresh_key.sql:
-                    # Replace ${CUBE} and ${this} with actual table name
-                    refresh_sql = pre_agg.refresh_key.sql
-                    if table_name:
-                        refresh_sql = refresh_sql.replace('${CUBE}', table_name)
-                        refresh_sql = refresh_sql.replace('${this}', table_name)
-                    refresh_key_parts.append(f"        sql: `{refresh_sql}`")
-                if pre_agg.refresh_key.incremental is not None:
-                    refresh_key_parts.append(f"        incremental: {str(pre_agg.refresh_key.incremental).lower()}")
-                if pre_agg.refresh_key.update_window:
-                    refresh_key_parts.append(f"        update_window: `{pre_agg.refresh_key.update_window}`")
-                
-                if refresh_key_parts:
-                    refresh_key_content = ',\n'.join(refresh_key_parts)
-                    pre_agg_parts.append(f"      refresh_key: {{\n{refresh_key_content}\n      }}")
-            
-            parts_joined = ',\n'.join(pre_agg_parts)
-            pre_agg_content = f"""    {pre_agg.name}: {{
-{parts_joined}
-    }}"""
-            pre_aggregations_content.append(pre_agg_content)
-        
-        # Generate joins
-        joins_content = []
-        for join in cube_schema.joins:
-            join_content = (
-                f"    {join.name}: {{\n"
-                f"      sql: `{join.sql}`,\n"
-                f"      relationship: `{join.relationship}`\n"
-                f"    }}"
-            )
-            joins_content.append(join_content)
-
-        # Combine into full cube definition
-        dimensions_joined = ',\n\n'.join(dimensions_content)
-        measures_joined = ',\n\n'.join(measures_content)
-
-        # Ensure we have measures (required for a useful Cube.js schema)
-        if not measures_content:
+    def _generate_cube_yaml(self, cube_schema: CubeSchema) -> str:
+        """Generate Cube.js YAML data model content."""
+        if not cube_schema.measures:
             raise ValueError(
                 f"Cube {cube_schema.cube_name} has no measures defined. "
                 "Measures are required for Cube.js schemas."
             )
 
-        sections: List[str] = [f"  sql: `{cube_schema.sql}`"]
+        cube: dict = {'name': cube_schema.cube_name, 'sql': cube_schema.sql}
 
-        if joins_content:
-            joins_joined = ',\n\n'.join(joins_content)
-            sections.append(f"  joins: {{\n{joins_joined}\n  }}")
+        if cube_schema.joins:
+            cube['joins'] = [
+                {
+                    'name': j.name,
+                    'sql': self._normalize_cube_ref(j.sql),
+                    'relationship': j.relationship,
+                }
+                for j in cube_schema.joins
+            ]
 
-        sections.append(f"  dimensions: {{\n{dimensions_joined}\n  }}")
-        sections.append(f"  measures: {{\n{measures_joined}\n  }}")
+        if cube_schema.dimensions:
+            dims = []
+            for d in cube_schema.dimensions:
+                entry: dict = {'name': d.name, 'sql': d.sql, 'type': d.type, 'title': d.title}
+                if d.primary_key:
+                    entry['primary_key'] = True
+                if d.description:
+                    entry['description'] = d.description
+                dims.append(entry)
+            cube['dimensions'] = dims
 
-        if pre_aggregations_content:
-            pre_aggs_joined = ',\n\n'.join(pre_aggregations_content)
-            sections.append(f"  pre_aggregations: {{\n{pre_aggs_joined}\n  }}")
+        measures = []
+        for m in cube_schema.measures:
+            entry = {'name': m.name, 'type': m.type, 'title': m.title}
+            if m.sql:
+                entry['sql'] = m.sql
+            if m.description:
+                entry['description'] = m.description
+            if m.format:
+                entry['format'] = m.format
+            if m.filters:
+                entry['filters'] = [{'sql': f} for f in m.filters]
+            measures.append(entry)
+        cube['measures'] = measures
 
-        body = ',\n\n'.join(sections)
-        return f"cube(`{cube_schema.cube_name}`, {{\n{body}\n}});\n"
-    
+        if cube_schema.pre_aggregations:
+            pre_aggs = []
+            for pa in cube_schema.pre_aggregations:
+                entry = {'name': pa.name, 'type': pa.type}
+                if pa.measures:
+                    entry['measures'] = [f'CUBE.{m}' for m in pa.measures]
+                if pa.dimensions:
+                    entry['dimensions'] = [f'CUBE.{d}' for d in pa.dimensions]
+                if pa.time_dimension:
+                    entry['time_dimension'] = f'CUBE.{pa.time_dimension}'
+                if pa.granularity:
+                    entry['granularity'] = pa.granularity
+                if pa.refresh_key:
+                    rk: dict = {}
+                    if pa.refresh_key.every:
+                        rk['every'] = pa.refresh_key.every
+                    if pa.refresh_key.sql:
+                        rk['sql'] = self._normalize_cube_ref(pa.refresh_key.sql)
+                    if pa.refresh_key.incremental is not None:
+                        rk['incremental'] = pa.refresh_key.incremental
+                    if pa.refresh_key.update_window:
+                        rk['update_window'] = pa.refresh_key.update_window
+                    if rk:
+                        entry['refresh_key'] = rk
+                pre_aggs.append(entry)
+            cube['pre_aggregations'] = pre_aggs
+
+        if cube_schema.access_policy:
+            cube['access_policy'] = cube_schema.access_policy
+
+        return yaml.dump(
+            {'cubes': [cube]},
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+    @staticmethod
+    def _normalize_cube_ref(sql: str) -> str:
+        """Convert JS template literal cube refs (${X}) to YAML refs ({X})."""
+        return sql.replace('${', '{') if sql else sql
+
     @staticmethod
     def _safe_sql_expr(col_name: str, raw_type: str) -> str:
         """Return a SQL expression that is safe for Cube Store / Arrow Decimal128.

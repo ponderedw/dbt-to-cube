@@ -1,648 +1,474 @@
 """
-Superset connector for syncing Cube.js schemas
+Superset connector — syncs Superset datasets from the Cube.js API.
+
+Fetches cube definitions from Cube.js /meta, then creates, updates, and
+deletes Superset datasets to match.  No local files are read or written.
 """
-import os
-import re
 import json
-import requests
 import time
-from typing import Dict, List, Any, Optional
-from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import requests
 
 from .base import BaseConnector, ConnectorRegistry
 from ..core.models import SyncResult
 
 
 class SupersetConnector(BaseConnector):
-    """Connector for Apache Superset BI tool"""
-    
-    def __init__(self, url: str, username: str, password: str, database_name: str = "Cube", **kwargs):
-        """
-        Initialize Superset connector
-        
-        Args:
-            url: Superset base URL (e.g., 'http://localhost:8088')
-            username: Superset username
-            password: Superset password
-            database_name: Name of the database in Superset (default: "Cube")
-        """
+    """Apache Superset BI connector — API-to-API only."""
+
+    def __init__(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        database_name: str = "Cube",
+        **kwargs,
+    ):
         super().__init__(
             url=url,
             username=username,
             password=password,
             database_name=database_name,
-            **kwargs
+            **kwargs,
         )
-        
         self.base_url = url.rstrip('/')
         self.session = requests.Session()
         self.access_token = None
         self.csrf_token = None
         self.database_id = None
-        
         self.connect()
-    
+
     def _validate_config(self) -> None:
-        """Validate the provided configuration"""
-        required_fields = ['url', 'username', 'password']
-        missing_fields = [field for field in required_fields if not self.config.get(field)]
-        
-        if missing_fields:
-            raise ValueError(f"Missing required configuration fields: {missing_fields}")
-    
+        required = ['url', 'username', 'password']
+        missing = [f for f in required if not self.config.get(f)]
+        if missing:
+            raise ValueError(f"Missing required config fields: {missing}")
+
     def connect(self) -> None:
-        """Establish connection to Superset"""
         self._login()
         self._get_csrf_token()
         self._get_database_id()
-    
-    def _login(self):
-        """Authenticate and get JWT token"""
-        login_url = f"{self.base_url}/api/v1/security/login"
-        payload = {
-            "password": self.config['password'],
-            "provider": "db",
-            "refresh": "true",
-            "username": self.config['username']
-        }
 
-        response = self.session.post(login_url, json=payload)
-        if response.status_code == 401:
-            raise Exception(
-                f"Superset authentication failed (401). "
-                f"Check username/password and ensure provider='{payload['provider']}' is correct. "
-                f"Response: {response.text}"
+    # ── Auth ──────────────────────────────────────────────────────────────────
+
+    def _login(self):
+        resp = self.session.post(
+            f"{self.base_url}/api/v1/security/login",
+            json={
+                "password": self.config['password'],
+                "provider": "db",
+                "refresh": "true",
+                "username": self.config['username'],
+            },
+        )
+        if resp.status_code == 401:
+            raise RuntimeError(
+                f"Superset auth failed (401). Check credentials. Response: {resp.text}"
             )
-        response.raise_for_status()
-        
-        data = response.json()
-        self.access_token = data.get('access_token')
-        
-        # Set authorization header for all future requests
+        resp.raise_for_status()
+        self.access_token = resp.json()['access_token']
         self.session.headers.update({
             'Authorization': f'Bearer {self.access_token}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         })
-        
-        print("✓ Successfully logged in to Superset")
-    
+
     def _get_csrf_token(self):
-        """Get CSRF token for POST requests"""
-        csrf_url = f"{self.base_url}/api/v1/security/csrf_token/"
-        response = self.session.get(csrf_url)
-        response.raise_for_status()
-        
-        self.csrf_token = response.json().get('result')
+        resp = self.session.get(f"{self.base_url}/api/v1/security/csrf_token/")
+        resp.raise_for_status()
+        self.csrf_token = resp.json()['result']
         self.session.headers.update({'X-CSRFToken': self.csrf_token})
-        
-        print("✓ Retrieved CSRF token")
-    
+
     def _get_database_id(self):
-        """Get database ID by name"""
-        database_name = self.config.get('database_name', 'Cube')
-        databases_url = f"{self.base_url}/api/v1/database/"
-        params = {
-            "q": json.dumps({
-                "filters": [
-                    {
-                        "col": "database_name",
-                        "opr": "eq",
-                        "value": database_name
-                    }
-                ]
-            })
-        }
-        
-        response = self.session.get(databases_url, params=params)
-        response.raise_for_status()
-        
-        result = response.json().get('result', [])
-        if not result:
-            raise ValueError(f"Database '{database_name}' not found")
-        
-        self.database_id = result[0]['id']
-        print(f"✓ Found database '{database_name}' with ID: {self.database_id}")
-    
-    def sync_cube_schemas(self, cube_dir: str, models_filter: set = None) -> List[SyncResult]:
-        """Sync Cube.js schemas from directory to Superset
+        db_name = self.config.get('database_name', 'Cube')
+        resp = self.session.get(
+            f"{self.base_url}/api/v1/database/",
+            params={"q": json.dumps({
+                "filters": [{"col": "database_name", "opr": "eq", "value": db_name}]
+            })},
+        )
+        resp.raise_for_status()
+        results = resp.json().get('result', [])
+        if not results:
+            raise ValueError(f"Database '{db_name}' not found in Superset. "
+                             f"Create a PostgreSQL connection to Cube SQL API first.")
+        self.database_id = results[0]['id']
+        print(f"Found database '{db_name}' (id={self.database_id})")
 
-        Args:
-            cube_dir: Directory containing Cube.js schema files
-            models_filter: Optional set of model names to sync. If None, sync all.
+    # ── API-to-API sync ───────────────────────────────────────────────────────
+
+    def sync_from_cube_api(
+        self,
+        cube_api_url: str,
+        cube_api_secret: str = '',
+        models_filter: Optional[set] = None,
+    ) -> 'Tuple[List[SyncResult], Dict[str, int]]':
+        """Sync Superset datasets from the Cube.js /meta API.
+
+        - Creates a dataset for every cube in Cube.js that doesn't exist yet.
+        - Updates columns and metrics for every existing dataset.
+        - Deletes Superset datasets that no longer exist in Cube.js
+          (only when models_filter is None — i.e. full sync).
+
+        Returns (results, dataset_map) where dataset_map is {cube_name: dataset_id}.
         """
-        results = []
-        cube_files = self._get_cube_files(cube_dir)
+        results: List[SyncResult] = []
+        dataset_map: Dict[str, int] = {}
 
-        if not cube_files:
-            return [SyncResult(
-                file_or_dataset="No files",
-                status="failed",
-                message=f"No .js files found in {cube_dir}"
-            )]
-
-        # Filter files if models_filter is provided
+        cube_meta = self._fetch_cube_meta(cube_api_url, cube_api_secret)
         if models_filter:
-            cube_files = [f for f in cube_files if f.stem in models_filter]
-            print(f"🔍 Syncing {len(cube_files)} Cube.js files (filtered from {len(self._get_cube_files(cube_dir))})")
-        else:
-            print(f"🔍 Found {len(cube_files)} Cube.js files")
+            cube_meta = {k: v for k, v in cube_meta.items() if k in models_filter}
+        print(f"Cube.js: {len(cube_meta)} cube(s)")
 
-        for cube_file in cube_files:
+        existing = self._fetch_superset_datasets_by_name()
+        print(f"Superset: {len(existing)} existing dataset(s)")
+
+        for cube_name, cube_info in cube_meta.items():
+            schema_info = self._cube_meta_to_schema_info(cube_name, cube_info)
             try:
-                print(f"\\n{'='*60}")
-                print(f"Processing: {cube_file.name}")
-                print(f"{'='*60}")
-                
-                result = self.sync_single_schema(str(cube_file))
-                results.append(result)
-                
+                if cube_name in existing:
+                    dataset_id = existing[cube_name]
+                    self._update_dataset_metadata(dataset_id, schema_info)
+                    dataset_map[cube_name] = dataset_id
+                    results.append(SyncResult(file_or_dataset=cube_name, status='success', message=f'updated id={dataset_id}'))
+                    print(f"  ~ {cube_name} → updated (id={dataset_id})")
+                else:
+                    dataset_id = self._create_new_dataset(schema_info)
+                    dataset_map[cube_name] = dataset_id
+                    results.append(SyncResult(file_or_dataset=cube_name, status='success', message=f'created id={dataset_id}'))
+                    print(f"  + {cube_name} → created (id={dataset_id})")
             except Exception as e:
-                print(f"✗ Error processing {cube_file.name}: {str(e)}")
-                results.append(SyncResult(
-                    file_or_dataset=cube_file.name,
-                    status="failed",
-                    error=str(e)
-                ))
-        
-        # Print summary
-        successful = sum(1 for r in results if r.status == 'success')
-        failed = sum(1 for r in results if r.status == 'failed')
-        print(f"\\n{'='*60}")
-        print("SYNC SUMMARY")
-        print(f"{'='*60}")
-        print(f"✓ Successful: {successful}")
-        print(f"✗ Failed: {failed}")
-        print(f"Total: {len(results)}")
-        
-        return results
-    
+                results.append(SyncResult(file_or_dataset=cube_name, status='failed', error=str(e)))
+                print(f"  ✗ {cube_name}: {e}")
+
+        # Remove orphans only on full sync
+        if not models_filter:
+            for name in sorted(set(existing) - set(cube_meta)):
+                try:
+                    self.session.delete(
+                        f"{self.base_url}/api/v1/dataset/{existing[name]}"
+                    ).raise_for_status()
+                    results.append(SyncResult(file_or_dataset=name, status='success', message=f'deleted orphan id={existing[name]}'))
+                    print(f"  - {name} → deleted (no longer in Cube)")
+                except Exception as e:
+                    results.append(SyncResult(file_or_dataset=name, status='failed', error=str(e)))
+                    print(f"  ✗ {name} (delete): {e}")
+
+        ok = sum(1 for r in results if r.status == 'success')
+        fail = sum(1 for r in results if r.status == 'failed')
+        print(f"\nDone: {ok} succeeded, {fail} failed")
+        return results, dataset_map
+
+    # Not used in API mode — raises to prevent accidental invocation
+    def sync_cube_schemas(self, cube_dir: str, models_filter=None) -> List[SyncResult]:
+        raise NotImplementedError(
+            "SupersetConnector only supports API-to-API sync. "
+            "Use sync_from_cube_api() or pass --cube-api-url."
+        )
+
     def sync_single_schema(self, cube_file_path: str) -> SyncResult:
-        """Sync a single Cube.js schema file to Superset"""
-        try:
-            schema_info = self._parse_cube_file(cube_file_path)
-            dataset_id = self._create_or_update_dataset(schema_info)
-            
-            return SyncResult(
-                file_or_dataset=Path(cube_file_path).name,
-                status="success",
-                message=f"Dataset created/updated with ID: {dataset_id}"
-            )
-            
-        except Exception as e:
-            return SyncResult(
-                file_or_dataset=Path(cube_file_path).name,
-                status="failed",
-                error=str(e)
-            )
-    
-    def _parse_cube_file(self, file_path: str) -> Dict[str, Any]:
-        """Parse Cube.js schema file and extract metadata"""
-        with open(file_path, 'r') as f:
-            content = f.read()
-        
-        # Extract cube name
-        cube_name_match = re.search(r'cube\s*\(\s*[`"\']([^`"\']+)[`"\']', content)
-        if not cube_name_match:
-            raise ValueError(f"Could not find cube name in {file_path}")
-        
-        cube_name = cube_name_match.group(1)
-        
-        print(f"  Cube: {cube_name}")
-        
-        # Parse dimensions
-        dimensions = self._parse_dimensions(content)
+        raise NotImplementedError(
+            "SupersetConnector only supports API-to-API sync. "
+            "Use sync_from_cube_api() or pass --cube-api-url."
+        )
 
-        # Parse measures (pass cube_name for MEASURE() syntax)
-        measures = self._parse_measures(content, cube_name)
-        
-        return {
-            'cube_name': cube_name,
-            'schema': 'public',             # Always use public schema for Cube.js
-            'table_name': cube_name,        # Use cube name as table name (e.g., CoursePerformanceSummary)
-            'dimensions': dimensions,
-            'measures': measures
-        }
-    
-    def _parse_dimensions(self, content: str) -> List[Dict[str, Any]]:
-        """Extract dimensions from Cube.js file"""
+    # ── Cube /meta helpers ────────────────────────────────────────────────────
+
+    def _fetch_cube_meta(self, cube_api_url: str, cube_api_secret: str) -> Dict[str, dict]:
+        url = cube_api_url.rstrip('/') + '/cubejs-api/v1/meta'
+        headers = {'Authorization': f'Bearer {cube_api_secret}'} if cube_api_secret else {}
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return {c['name']: c for c in resp.json().get('cubes', [])}
+
+    def _cube_meta_to_schema_info(self, cube_name: str, cube_info: dict) -> dict:
         dimensions = []
-
-        dimensions_block = self._extract_block(content, 'dimensions')
-
-        if dimensions_block is None:
-            print("  ⚠️  No dimensions block found")
-            return dimensions
-
-        matches = list(self._iter_named_blocks(dimensions_block))
-
-        print(f"  Found {len(matches)} dimensions in Cube.js file")
-
-        for dim_name, dim_content in matches:
-            
-            # Extract sql field (actual column name)
-            sql_match = re.search(r'sql:\s*`([^`]+)`', dim_content)
-            column_name = sql_match.group(1).strip() if sql_match else dim_name
-            
-            # Extract type
-            type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', dim_content)
-            dim_type = type_match.group(1) if type_match else 'string'
-            
-            title_match = re.search(r"title:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", dim_content)
-            desc_match = re.search(r"description:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", dim_content)
-
-            verbose_name = next((g for g in title_match.groups() if g is not None), None) if title_match else None
-            verbose_name = verbose_name if verbose_name else dim_name.replace('_', ' ').title()
-            if '__' in dim_name:
-                description = 'do not use, this is not dimension'
-            else:
-                description = next((g for g in desc_match.groups() if g is not None), None) if desc_match else None
-            
+        for dim in cube_info.get('dimensions', []):
+            field = dim['name'].split('.')[-1]
+            dim_type = dim.get('type', 'string')
             dimensions.append({
-                'column_name': column_name,
-                'type': self._map_cube_type_to_superset(dim_type),
-                'verbose_name': verbose_name,
-                'description': description,
+                'column_name': field,
+                'type': self._cube_type_to_sql(dim_type),
+                'verbose_name': dim.get('title') or field,
+                'description': dim.get('description') or '',
                 'is_dttm': dim_type == 'time',
                 'groupby': True,
-                'filterable': True
+                'filterable': True,
             })
-            
-            print(f"    - {dim_name} ({column_name})")
-        
-        return dimensions
-    
-    def _parse_measures(self, content: str, cube_name: str) -> List[Dict[str, Any]]:
-        """Extract measures from Cube.js file.
 
-        Args:
-            content: The Cube.js file content
-            cube_name: The name of the cube (used for MEASURE() syntax)
-
-        Returns:
-            List of measure definitions with MEASURE(CubeName.metric_name) expressions
-        """
         measures = []
-
-        # Find measures block using brace-counting (handles ${CUBE} template refs)
-        measures_block = self._extract_block(content, 'measures')
-
-        if measures_block is None:
-            print("  ⚠️  No measures block found")
-            return measures
-
-        # Parse individual measures using the same brace-counting approach
-        matches = list(self._iter_named_blocks(measures_block))
-
-        print(f"  Found {len(matches)} measures in Cube.js file")
-
-        for measure_name, measure_content in matches:
-
-            # Extract type, sql, title, description
-            type_match = re.search(r'type:\s*[`"\']([^`"\']+)[`"\']', measure_content)
-            measure_type = type_match.group(1) if type_match else 'sum'
-
-            sql_match = re.search(r'sql:\s*`([^`]+)`', measure_content)
-            measure_sql = sql_match.group(1).strip() if sql_match else measure_name
-
-            title_match = re.search(r"title:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", measure_content)
-            metric_name = next((g for g in title_match.groups() if g is not None), None) if title_match else None
-            metric_name = metric_name if metric_name else measure_name.replace('_', ' ').title()
-
-            desc_match = re.search(r"description:\s*(?:`([^`]+)`|'([^']+)'|\"([^\"]+)\")", measure_content)
-            base_description = next((g for g in desc_match.groups() if g is not None), None) if desc_match else None
-            agg_hint = f'{measure_type}({measure_sql})'
-            description = f'{base_description} ({agg_hint})' if base_description else agg_hint
-
-            # Use MEASURE(CubeName.metric_name) syntax for Superset
-            # This leverages Cube.js SQL API to handle aggregation properly
-            expression = f"MEASURE({cube_name}.{measure_name})"
-
+        for m in cube_info.get('measures', []):
+            field = m['name'].split('.')[-1]
+            m_type = m.get('type', 'sum')
+            description = m.get('description') or ''
             measures.append({
-                'metric_name': metric_name,
-                'expression': expression,
-                'description': description,
-                'verbose_name': metric_name,
-                'metric_type': measure_type
+                'metric_name': m.get('title') or field,
+                'expression': f'MEASURE({cube_name}.{field})',
+                'verbose_name': m.get('title') or field,
+                'description': f'{description} ({m_type})'.strip(' ()'),
+                'metric_type': 'simple',
             })
 
-            print(f"    - {metric_name} -> {expression}")
-
-        return measures
-    
-    def _extract_block(self, content: str, key: str):
-        """Return the inner content of `key: { ... }` using brace-counting.
-
-        Skips `${...}` template references so they don't confuse the counter.
-        Returns None if the key is not found.
-        """
-        marker = f'{key}:'
-        start = content.find(marker)
-        if start == -1:
-            return None
-        brace_start = content.find('{', start + len(marker))
-        if brace_start == -1:
-            return None
-        depth = 0
-        i = brace_start
-        while i < len(content):
-            ch = content[i]
-            if ch == '$' and i + 1 < len(content) and content[i + 1] == '{':
-                # skip ${...} template reference
-                end = content.find('}', i + 2)
-                i = end + 1 if end != -1 else len(content)
-                continue
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    return content[brace_start + 1:i]
-            i += 1
-        return None
-
-    def _iter_named_blocks(self, content: str):
-        """Yield (name, inner_content) for each `name: { ... }` entry.
-
-        Uses brace-counting so `${CUBE}` inside values doesn't break parsing.
-        """
-        i = 0
-        name_re = re.compile(r'\b(\w+)\s*:', re.MULTILINE)
-        while i < len(content):
-            m = name_re.search(content, i)
-            if not m:
-                break
-            name = m.group(1)
-            brace_pos = content.find('{', m.end())
-            if brace_pos == -1:
-                break
-            # make sure nothing but whitespace/comments between ':' and '{'
-            between = content[m.end():brace_pos]
-            if between.strip() and not between.strip().startswith('//'):
-                i = m.end()
-                continue
-            depth = 0
-            j = brace_pos
-            while j < len(content):
-                ch = content[j]
-                if ch == '$' and j + 1 < len(content) and content[j + 1] == '{':
-                    end = content.find('}', j + 2)
-                    j = end + 1 if end != -1 else len(content)
-                    continue
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        yield name, content[brace_pos + 1:j]
-                        i = j + 1
-                        break
-                j += 1
-            else:
-                break
-
-    def _map_cube_type_to_superset(self, cube_type: str) -> str:
-        """Map Cube.js types to Superset/SQL types"""
-        type_mapping = {
-            'string': 'VARCHAR',
-            'number': 'NUMERIC',
-            'time': 'TIMESTAMP',
-            'boolean': 'BOOLEAN'
+        return {
+            'cube_name': cube_name,
+            'schema': 'public',
+            'table_name': cube_name,
+            'dimensions': dimensions,
+            'measures': measures,
         }
-        return type_mapping.get(cube_type, 'VARCHAR')
-    
-    def _create_metric_expression(self, agg_type: str, sql_expression: str) -> str:
-        """Create SQL metric expression from Cube.js measure"""
-        agg_mapping = {
-            'sum': 'SUM',
-            'avg': 'AVG',
-            'count': 'COUNT',
-            'min': 'MIN',
-            'max': 'MAX',
-            'count_distinct': 'COUNT(DISTINCT'
-        }
-        
-        # Remove Cube.js ${} syntax and convert to plain SQL column references
-        cleaned_expression = self._clean_cube_expression(sql_expression)
-        
-        agg_func = agg_mapping.get(agg_type, 'SUM')
-        
-        if agg_type == 'count_distinct':
-            return f"{agg_func} {cleaned_expression})"
-        else:
-            return f"{agg_func}({cleaned_expression})"
-    
-    def _clean_cube_expression(self, expression: str) -> str:
-        """Convert Cube.js expressions to SQL column references for Superset"""
-        import re
-        
-        # Remove ${} syntax - convert ${column_name} to column_name
-        cleaned = re.sub(r'\$\{([^}]+)\}', r'\1', expression)
-        
-        # Handle more complex expressions like arithmetic
-        # Keep parentheses and operators but clean column references
-        return cleaned
-    
-    def _create_or_update_dataset(self, schema_info: Dict[str, Any]) -> int:
-        """Create a new dataset or update existing one"""
-        # Check if dataset already exists
-        existing_id = self._find_existing_dataset(
-            schema_info['schema'],
-            schema_info['table_name']
-        )
-        
-        if existing_id:
-            print(f"\\n🔄 Dataset already exists (ID: {existing_id}), updating...")
-            self._update_dataset_metadata(existing_id, schema_info)
-            return existing_id
-        else:
-            return self._create_new_dataset(schema_info)
-    
-    def _find_existing_dataset(self, schema_name: str, table_name: str) -> Optional[int]:
-        """Find existing dataset by schema and table name"""
-        dataset_url = f"{self.base_url}/api/v1/dataset/"
-        params = {
-            "q": json.dumps({
+
+    # ── Superset dataset CRUD ─────────────────────────────────────────────────
+
+    def _fetch_superset_datasets_by_name(self) -> Dict[str, int]:
+        resp = self.session.get(
+            f"{self.base_url}/api/v1/dataset/",
+            params={"q": json.dumps({
                 "filters": [
-                    {
-                        "col": "table_name",
-                        "opr": "eq",
-                        "value": table_name
-                    },
-                    {
-                        "col": "schema",
-                        "opr": "eq",
-                        "value": schema_name
-                    },
-                    {
-                        "col": "database",
-                        "opr": "rel_o_m",
-                        "value": self.database_id
-                    }
-                ]
-            })
-        }
-        
-        response = self.session.get(dataset_url, params=params)
-        if response.status_code == 200:
-            results = response.json().get('result', [])
-            if results:
-                return results[0]['id']
-        
-        return None
-    
-    def _create_new_dataset(self, schema_info: Dict[str, Any]) -> int:
-        """Create a new dataset in Superset"""
-        dataset_url = f"{self.base_url}/api/v1/dataset/"
-        
-        # Create a simple table dataset (Cube.js will handle the actual data source)
-        payload = {
-            "database": self.database_id,
-            "schema": schema_info['schema'],              # "public"
-            "table_name": schema_info['table_name'],      # cube name like "CoursePerformanceSummary"
-            "normalize_columns": False,
-            "always_filter_main_dttm": False
-        }
-        
-        print(f"\\n📊 Creating new dataset: {schema_info['table_name']}")
-        response = self.session.post(dataset_url, json=payload)
-        
-        if response.status_code == 201:
-            dataset_id = response.json()['id']
-            print(f"✓ Dataset created with ID: {dataset_id}")
-            
-            # Update dataset with columns and metrics
-            self._update_dataset_metadata(dataset_id, schema_info)
-            
-            return dataset_id
-        else:
-            print(f"✗ Failed to create dataset: {response.status_code}")
-            print(f"Response: {response.text}")
-            raise Exception(f"Failed to create dataset: {response.text}")
-    
-    def _update_dataset_metadata(self, dataset_id: int, schema_info: Dict[str, Any]):
-        """Update dataset with column descriptions and metrics"""
+                    {"col": "database", "opr": "rel_o_m", "value": self.database_id}
+                ],
+                "page_size": 1000,
+            })},
+        )
+        resp.raise_for_status()
+        return {r['table_name']: r['id'] for r in resp.json().get('result', [])}
+
+    def _create_new_dataset(self, schema_info: dict) -> int:
+        resp = self.session.post(
+            f"{self.base_url}/api/v1/dataset/",
+            json={
+                "database": self.database_id,
+                "schema": schema_info['schema'],
+                "table_name": schema_info['table_name'],
+                "normalize_columns": False,
+                "always_filter_main_dttm": False,
+            },
+        )
+        if resp.status_code != 201:
+            raise RuntimeError(f"Failed to create dataset: {resp.status_code} {resp.text}")
+        dataset_id = resp.json()['id']
+        self._update_dataset_metadata(dataset_id, schema_info)
+        return dataset_id
+
+    def _update_dataset_metadata(self, dataset_id: int, schema_info: dict):
         dataset_url = f"{self.base_url}/api/v1/dataset/{dataset_id}"
-        
-        # Refresh dataset to get all columns
-        print(f"\\n🔄 Step 1: Refreshing dataset to fetch columns...")
-        refresh_url = f"{self.base_url}/api/v1/dataset/{dataset_id}/refresh"
-        self.session.put(refresh_url)
-        time.sleep(2)  # Wait for refresh
-        
-        # Get current dataset info
-        print(f"\\n📥 Step 2: Fetching dataset details...")
-        response = self.session.get(dataset_url)
-        if response.status_code != 200:
-            print(f"✗ Failed to get dataset info: {response.status_code}")
-            return
-        
-        dataset_data = response.json()['result']
-        existing_columns = dataset_data.get('columns', [])
-        existing_metrics = dataset_data.get('metrics', [])
-        
-        # Update columns
-        print(f"\\n🏷️  Step 3: Updating column metadata...")
-        updated_columns = self._update_columns(existing_columns, schema_info['dimensions'])
-        
-        # Update metrics
-        print(f"\\n📊 Step 4: Adding metrics to dataset...")
-        updated_metrics = self._update_metrics(existing_metrics, schema_info['measures'])
-        
-        # Send updates
-        if updated_columns:
-            print(f"\\n💾 Step 5: Saving updates...")
-            update_payload = {
-                'columns': updated_columns,
-                'metrics': updated_metrics
-            }
-            
-            response = self.session.put(dataset_url, json=update_payload)
-            if response.status_code == 200:
-                print(f"✓ Dataset updated successfully")
-            else:
-                print(f"✗ Failed to update dataset: {response.status_code}")
-                print(f"Response: {response.text}")
-                raise Exception(f"Failed to update dataset {dataset_id}: {response.status_code} {response.text}")
-    
-    def _update_columns(self, existing_columns: List[dict], dimensions: List[dict]) -> List[dict]:
-        """Update columns with metadata from dimensions"""
-        updated_columns = []
-        
-        for col in existing_columns:
-            col_name = col['column_name']
-            
-            # Find matching dimension
-            matching_dim = next(
-                (d for d in dimensions if d['column_name'].lower() == col_name.lower()),
-                None
+
+        self.session.put(f"{dataset_url}/refresh")
+        time.sleep(1)
+
+        resp = self.session.get(dataset_url)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to fetch dataset {dataset_id}: {resp.status_code}")
+
+        ds = resp.json()['result']
+        updated_columns = self._merge_columns(ds.get('columns', []), schema_info['dimensions'])
+        updated_metrics = self._merge_metrics(ds.get('metrics', []), schema_info['measures'])
+
+        put_resp = self.session.put(
+            dataset_url,
+            json={'columns': updated_columns, 'metrics': updated_metrics},
+        )
+        if put_resp.status_code != 200:
+            raise RuntimeError(
+                f"Failed to update dataset {dataset_id}: {put_resp.status_code} {put_resp.text}"
             )
-            
-            if matching_dim:
-                # Clean and update column
-                updated_col = {k: v for k, v in col.items() 
-                             if k not in ['created_on', 'changed_on', 'type_generic', 'uuid', 'advanced_data_type']}
-                
-                updated_col.update({
-                    'verbose_name': matching_dim['verbose_name'],
-                    'description': matching_dim['description'] or '',
-                    'is_dttm': matching_dim['is_dttm'],
-                    'groupby': matching_dim['groupby'],
-                    'filterable': matching_dim['filterable'],
+
+    def _merge_columns(self, existing: list, dimensions: list) -> list:
+        _SKIP = {'created_on', 'changed_on', 'type_generic', 'uuid', 'advanced_data_type'}
+        dim_lookup = {d['column_name'].lower(): d for d in dimensions}
+        result = []
+        for col in existing:
+            clean = {k: v for k, v in col.items() if k not in _SKIP}
+            dim = dim_lookup.get(col['column_name'].lower())
+            if dim:
+                clean.update({
+                    'verbose_name': dim['verbose_name'],
+                    'description': dim['description'],
+                    'is_dttm': dim['is_dttm'],
+                    'groupby': dim['groupby'],
+                    'filterable': dim['filterable'],
                     'is_active': True,
-                    'expression': col.get('expression', ''),
                 })
-                
-                updated_columns.append(updated_col)
-                print(f"  ✓ {col_name} → '{matching_dim['verbose_name']}'")
-            else:
-                # Clean column but keep it
-                clean_col = {k: v for k, v in col.items() 
-                           if k not in ['created_on', 'changed_on', 'type_generic', 'uuid', 'advanced_data_type']}
-                updated_columns.append(clean_col)
-                print(f"  ○ {col_name} (no matching dimension)")
-        
-        return updated_columns
-    
-    def _update_metrics(self, existing_metrics: List[dict], measures: List[dict]) -> List[dict]:
-        """Update metrics with new measures"""
-        # Clean existing metrics and create a lookup by name
-        updated_metrics = []
-        existing_metric_names = {}
-        
-        for metric in existing_metrics:
-            clean_metric = {k: v for k, v in metric.items() 
-                          if k not in ['created_on', 'changed_on', 'uuid']}
-            existing_metric_names[metric.get('metric_name')] = len(updated_metrics)
-            updated_metrics.append(clean_metric)
-        
-        # Add or update metrics
+            result.append(clean)
+        return result
+
+    def _merge_metrics(self, existing: list, measures: list) -> list:
+        _SKIP = {'created_on', 'changed_on', 'uuid'}
+        result = []
+        index: Dict[str, int] = {}
+        for m in existing:
+            clean = {k: v for k, v in m.items() if k not in _SKIP}
+            index[m.get('metric_name', '')] = len(result)
+            result.append(clean)
+
         for measure in measures:
-            metric_name = measure['metric_name']
-            
-            new_metric = {
-                'metric_name': metric_name,
+            new_m = {
+                'metric_name': measure['metric_name'],
                 'verbose_name': measure['verbose_name'],
                 'expression': measure['expression'],
-                'description': measure['description'] or '',
+                'description': measure['description'],
                 'metric_type': 'simple',
                 'currency': None,
                 'd3format': None,
                 'extra': None,
-                'warning_text': None
+                'warning_text': None,
             }
-            
-            if metric_name in existing_metric_names:
-                # Update existing metric
-                index = existing_metric_names[metric_name]
-                updated_metrics[index].update(new_metric)
-                print(f"  ✓ Updated '{metric_name}': {measure['expression']}")
+            if measure['metric_name'] in index:
+                result[index[measure['metric_name']]].update(new_m)
             else:
-                # Add new metric
-                updated_metrics.append(new_metric)
-                print(f"  ✓ Added '{metric_name}': {measure['expression']}")
-        
-        return updated_metrics
+                result.append(new_m)
+
+        return result
+
+    @staticmethod
+    def _cube_type_to_sql(cube_type: str) -> str:
+        return {
+            'string': 'VARCHAR',
+            'number': 'NUMERIC',
+            'time': 'TIMESTAMP',
+            'boolean': 'BOOLEAN',
+        }.get(cube_type, 'VARCHAR')
 
 
-# Register the Superset connector
+    def sync_rls(
+        self,
+        access_policies: Dict[str, List[dict]],
+        dataset_map: Dict[str, int],
+    ) -> List[SyncResult]:
+        """Create or update Superset RLS rules derived from Cube.js row_level.filters.
+
+        ``{ userAttributes.xxx }`` values are translated to Superset Jinja vars
+        ``{{ xxx }}``.  One RLS rule is created per access_policy entry that has
+        a ``row_level.filters`` list.  Rules are keyed on
+        ``(dataset_id, group)`` for idempotent re-runs.
+
+        Example dbt meta:
+
+          cube_access_policy:
+            - group: dbt_public
+              row_level:
+                filters:
+                  - member: country
+                    operator: equals
+                    values:
+                      - "{ userAttributes.country }"
+
+        → Superset clause:  country = '{{ country }}'
+        """
+        results: List[SyncResult] = []
+        existing = self._fetch_rls_rules_by_key()
+
+        for cube_name, policies in access_policies.items():
+            dataset_id = dataset_map.get(cube_name)
+            if not dataset_id:
+                continue
+
+            for policy in policies:
+                filters = (policy.get('row_level') or {}).get('filters', [])
+                if not filters:
+                    continue
+
+                group = policy.get('group', 'rls')
+                clauses = [self._filter_to_sql(f) for f in filters if self._filter_to_sql(f)]
+                if not clauses:
+                    continue
+
+                clause = ' AND '.join(clauses)
+                rule_name = f"{cube_name} {group}"
+                rule_key = f"{dataset_id}:{group}"
+                payload: dict = {
+                    'clause': clause,
+                    'filter_type': 'Regular',
+                    'group_key': group,
+                    'name': rule_name,
+                    'roles': [],
+                    'tables': [{'id': dataset_id}],
+                }
+
+                try:
+                    if rule_key in existing:
+                        rule_id = existing[rule_key]
+                        resp = self.session.put(
+                            f"{self.base_url}/api/v1/rowlevelsecurity/{rule_id}",
+                            json=payload,
+                        )
+                        if resp.status_code not in (200, 201):
+                            raise RuntimeError(f"{resp.status_code} {resp.text}")
+                        results.append(SyncResult(file_or_dataset=rule_name, status='success',
+                                                  message=f'rls updated id={rule_id}'))
+                        print(f"  ~ RLS {rule_name!r} → updated (id={rule_id})")
+                    else:
+                        resp = self.session.post(
+                            f"{self.base_url}/api/v1/rowlevelsecurity/",
+                            json=payload,
+                        )
+                        if resp.status_code not in (200, 201):
+                            raise RuntimeError(f"{resp.status_code} {resp.text}")
+                        rule_id = resp.json().get('id')
+                        results.append(SyncResult(file_or_dataset=rule_name, status='success',
+                                                  message=f'rls created id={rule_id}'))
+                        print(f"  + RLS {rule_name!r} → created (id={rule_id})")
+                except Exception as e:
+                    results.append(SyncResult(file_or_dataset=rule_name, status='failed', error=str(e)))
+                    print(f"  ✗ RLS {rule_name!r}: {e}")
+
+        ok = sum(1 for r in results if r.status == 'success')
+        fail = sum(1 for r in results if r.status == 'failed')
+        if results:
+            print(f"\nRLS sync: {ok} succeeded, {fail} failed")
+        return results
+
+    @staticmethod
+    def _filter_to_sql(f: dict) -> str:
+        """Translate a Cube.js row_level filter to a Superset SQL WHERE clause.
+
+        ``{ userAttributes.xxx }`` → Jinja ``{{ xxx }}``
+        """
+        import re
+
+        member = f.get('member', '')
+        operator = f.get('operator', 'equals')
+        values = f.get('values', [])
+        if not member or not values:
+            return ''
+
+        def _jinja(v: str) -> str:
+            m = re.match(r'\{\s*userAttributes\.(\w+)\s*\}', str(v))
+            return f'{{{{ {m.group(1)} }}}}' if m else str(v)
+
+        jinja_values = [_jinja(v) for v in values]
+
+        if operator in ('equals', 'contains'):
+            if len(jinja_values) == 1:
+                return f"{member} = '{jinja_values[0]}'"
+            return f"{member} IN ({', '.join(repr(v) for v in jinja_values)})"
+        if operator in ('notEquals', 'notContains'):
+            if len(jinja_values) == 1:
+                return f"{member} != '{jinja_values[0]}'"
+            return f"{member} NOT IN ({', '.join(repr(v) for v in jinja_values)})"
+        if operator == 'startsWith':
+            return f"{member} LIKE '{jinja_values[0]}%'"
+        if operator == 'endsWith':
+            return f"{member} LIKE '%{jinja_values[0]}'"
+        return ''
+
+    def _fetch_rls_rules_by_key(self) -> Dict[str, int]:
+        """Return existing RLS rules keyed by '{dataset_id}:{group_key}' → rule_id."""
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/api/v1/rowlevelsecurity/",
+                params={'q': '{"page_size": 1000}'},
+            )
+            if resp.status_code != 200:
+                return {}
+            result: Dict[str, int] = {}
+            for rule in resp.json().get('result', []):
+                gk = rule.get('group_key', '')
+                for tbl in rule.get('tables', []):
+                    key = f"{tbl.get('id')}:{gk}"
+                    result[key] = rule['id']
+            return result
+        except Exception:
+            return {}
+
+
 ConnectorRegistry.register('superset', SupersetConnector)
