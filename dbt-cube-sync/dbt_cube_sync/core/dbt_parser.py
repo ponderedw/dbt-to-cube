@@ -308,12 +308,18 @@ class DbtParser:
                 view_measures.append(m_def)
 
             # Build cubes section — include measures referenced by cross-model SQL
-            # plus all dimension/entity columns so the view exposes dimensions too
+            # plus all dimension/entity columns so the view exposes dimensions too.
+            # Deduplicate: if the same column name appears in multiple cubes, only
+            # include it in the first cube to avoid Cube.js "conflicts with existing
+            # member" errors (e.g. entity columns like 'customer' shared by both sides).
+            claimed_columns: set = set()
             for pascal_name in sorted_names:
                 model = pascal_to_model.get(pascal_name)
                 if model:
                     for col_name in model.columns:
-                        cube_includes[pascal_name].add(col_name)
+                        if col_name not in claimed_columns:
+                            cube_includes[pascal_name].add(col_name)
+                            claimed_columns.add(col_name)
 
             view_cubes = [
                 {'join_path': name, 'includes': sorted(cube_includes[name])}
