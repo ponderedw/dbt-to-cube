@@ -189,7 +189,7 @@ class SupersetConnector(BaseConnector):
             dimensions.append({
                 'column_name': field,
                 'type': self._cube_type_to_sql(dim_type),
-                'verbose_name': dim.get('title') or field,
+                'verbose_name': dim.get('shortTitle') or dim.get('title') or field,
                 'description': dim.get('description') or '',
                 'is_dttm': dim_type == 'time',
                 'groupby': True,
@@ -202,9 +202,9 @@ class SupersetConnector(BaseConnector):
             m_type = m.get('type', 'sum')
             description = m.get('description') or ''
             measures.append({
-                'metric_name': m.get('title') or field,
+                'metric_name': m.get('shortTitle') or m.get('title') or field,
                 'expression': f'MEASURE({cube_name}.{field})',
-                'verbose_name': m.get('title') or field,
+                'verbose_name': m.get('shortTitle') or m.get('title') or field,
                 'description': f'{description} ({m_type})'.strip(' ()'),
                 'metric_type': 'simple',
             })
