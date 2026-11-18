@@ -189,59 +189,110 @@ def _diff_yaml_states(
     return result
 
 
+def _post_cube_query(
+    payload: dict,
+    cube_api_url: str,
+    headers: dict,
+) -> Tuple[bool, str]:
+    """POST a Cube.js /load query and return (ok, detail_or_error)."""
+    url = cube_api_url.rstrip('/') + '/cubejs-api/v1/load'
+    for _ in range(10):
+        try:
+            resp = _requests.post(url, json=payload, headers=headers, timeout=60)
+            if resp.status_code == 200:
+                body = resp.json()
+                error = body.get('error', '')
+                if error == 'Continue wait':
+                    time.sleep(5)
+                    continue
+                if error:
+                    return False, error
+                return True, str(len(body.get('data', [])))
+            try:
+                err = resp.json().get('error', resp.text[:200])
+            except Exception:
+                err = resp.text[:200]
+            return False, err
+        except Exception as e:
+            return False, str(e)
+    return False, 'max retries exceeded'
+
+
+def _is_filter_param_error(error: str) -> bool:
+    """Return True when an error is caused by missing filter parameters, not a broken schema.
+
+    Cube.js FILTER_PARAMS / SECURITY_CONTEXT expressions emit SQL with '$'-style
+    placeholders when no matching filter is supplied.  Redshift then rejects the
+    query with a syntax error.  These are not real schema errors.
+    """
+    return '$' in error or 'syntax error' in error.lower()
+
+
 def _query_cube_via_api(
     cube_name: str,
     cube_info: dict,
     cube_api_url: str,
     cube_api_secret: str = '',
 ) -> Tuple[bool, str]:
-    """Run a minimal test query against a cube via the Cube.js load API.
+    """Validate a cube by testing every measure and every dimension.
 
-    Uses the first available measure with limit=1.  Returns (passed, detail).
+    Each measure is tested individually so a broken column is named precisely.
+    Measures that fail only because they require FILTER_PARAMS context (detected
+    by '$' in the SQL error) are skipped — they are not broken, just contextual.
+
+    Dimensions are tested together with the first working measure.  A failure
+    there means a broken dimension expression.
     """
     measures = [m['name'] for m in cube_info.get('measures', [])]
     if not measures:
         return True, 'no measures (skipped)'
 
-    url = cube_api_url.rstrip('/') + '/cubejs-api/v1/load'
     headers = {'Content-Type': 'application/json'}
     if cube_api_secret:
         headers['Authorization'] = f'Bearer {cube_api_secret}'
 
-    last_error = ''
-    for measure_name in measures:
-        if '.' not in measure_name:
-            measure_name = f'{cube_name}.{measure_name}'
+    def _full(name: str) -> str:
+        return name if '.' in name else f'{cube_name}.{name}'
 
-        payload = {'query': {'measures': [measure_name], 'limit': 1}}
-        max_retries = 10
-        retry_delay = 5
+    plain_dims = [_full(d['name']) for d in cube_info.get('dimensions', []) if d.get('type') != 'time']
+    time_dims  = [{'dimension': _full(d['name']), 'granularity': 'day'}
+                  for d in cube_info.get('dimensions', []) if d.get('type') == 'time']
 
-        for _ in range(max_retries):
-            try:
-                resp = _requests.post(url, json=payload, headers=headers, timeout=60)
-                if resp.status_code == 200:
-                    body = resp.json()
-                    error = body.get('error', '')
-                    if error == 'Continue wait':
-                        time.sleep(retry_delay)
-                        continue
-                    if error:
-                        last_error = error
-                        break  # try next measure
-                    rows = len(body.get('data', []))
-                    return True, f'{rows} row(s) via {measure_name.split(".")[-1]}'
-                else:
-                    try:
-                        last_error = resp.json().get('error', resp.text[:200])
-                    except Exception:
-                        last_error = resp.text[:200]
-                    break  # try next measure
-            except Exception as e:
-                last_error = str(e)
-                break
+    errors: list = []
+    skipped: list = []
+    working_measure: Optional[str] = None
 
-    return False, last_error
+    for bare in measures:
+        full_m = _full(bare)
+        ok, detail = _post_cube_query({'query': {'measures': [full_m], 'limit': 1}}, cube_api_url, headers)
+        if ok:
+            if working_measure is None:
+                working_measure = full_m
+        elif _is_filter_param_error(detail):
+            skipped.append(bare.split('.')[-1])
+        else:
+            errors.append(f'{bare.split(".")[-1]}: {detail}')
+
+    # Test all dimensions with the first working measure
+    if working_measure and (plain_dims or time_dims):
+        q: dict = {'measures': [working_measure], 'limit': 1}
+        if plain_dims:
+            q['dimensions'] = plain_dims
+        if time_dims:
+            q['timeDimensions'] = time_dims
+        ok, detail = _post_cube_query({'query': q}, cube_api_url, headers)
+        if not ok:
+            errors.append(f'dimensions: {detail}')
+
+    if errors:
+        return False, '; '.join(errors)
+
+    n_tested = len(measures) - len(skipped)
+    n_d = len(plain_dims) + len(time_dims)
+    summary = f'1 row(s), {n_tested} measure(s), {n_d} dim(s)'
+    if skipped:
+        summary += f' ({len(skipped)} filter-param skipped)'
+    return True, summary
 
 
 def _upload_to_s3(output_dir: str, s3_bucket: str, s3_prefix: str) -> str:
