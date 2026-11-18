@@ -1341,7 +1341,8 @@ def validate_cubes(
             with open(run_results) as f:
                 rr = _json.load(f)
             # relation_name format: '"db"."schema"."table"' or 'db.schema.table'
-            ci_schemas: dict = {}
+            ci_schemas: dict = {}       # uid  → ci_schema
+            ci_schemas_by_name: dict = {}  # model_name → ci_schema
             for result in rr.get('results', []):
                 if result.get('status') not in ('success', 'pass'):
                     continue
@@ -1349,18 +1350,25 @@ def validate_cubes(
                 relation = result.get('relation_name') or ''
                 parts    = [p.strip('"').strip('`').strip("'") for p in relation.split('.')]
                 if len(parts) >= 2 and uid:
-                    ci_schemas[uid] = parts[-2]  # schema is second-to-last component
+                    schema = parts[-2]  # schema is second-to-last component
+                    ci_schemas[uid] = schema
+                    # also key by bare model name (last segment of uid, e.g. "products")
+                    ci_schemas_by_name[uid.rsplit('.', 1)[-1]] = schema
             patched = 0
             for uid, node in manifest_data.get('nodes', {}).items():
                 if uid in ci_schemas:
                     node['schema'] = ci_schemas[uid]
                     patched += 1
             for uid, sm_data in manifest_data.get('semantic_models', {}).items():
-                if uid in ci_schemas:
+                # semantic model uids are "semantic_model.*.*", not in ci_schemas;
+                # match by model name instead
+                sm_name = sm_data.get('name', '') or uid.rsplit('.', 1)[-1]
+                schema = ci_schemas.get(uid) or ci_schemas_by_name.get(sm_name)
+                if schema:
                     nr = sm_data.get('node_relation', {})
                     if isinstance(nr, dict):
-                        nr['schema_name'] = ci_schemas[uid]
-                        nr['schema']      = ci_schemas[uid]
+                        nr['schema_name'] = schema
+                        nr['schema']      = schema
                     patched += 1
             click.echo(f"  Patched schema from run_results for {patched} CI-built node(s)")
 
