@@ -1265,6 +1265,10 @@ def sync_all(
 @click.option('--dev-schema', required=False, default=None,
               envvar='CUBE_DEV_SCHEMA',
               help='Override DB schema in manifest (useful for CI dev target schemas)')
+@click.option('--run-results', required=False, default=None,
+              help='Path to dbt run_results.json. Patches schema for each succeeded '
+                   'model using the actual relation_name it was built into — so Cube.js '
+                   'queries the CI-built tables instead of production ones.')
 def validate_cubes(
     manifest: str,
     sqlalchemy_uri: Optional[str],
@@ -1285,6 +1289,7 @@ def validate_cubes(
     db_ssl: str,
     api_secret: str,
     dev_schema: Optional[str],
+    run_results: Optional[str],
 ):
     """
     Validate Cube.js schemas against a running Cube.js instance (or via Docker).
@@ -1331,6 +1336,33 @@ def validate_cubes(
                     nr['schema_name'] = dev_schema
                     nr['schema'] = dev_schema
             click.echo(f"  Patched schema → '{dev_schema}' for all {patched} node(s)")
+
+        if run_results:
+            with open(run_results) as f:
+                rr = _json.load(f)
+            # relation_name format: '"db"."schema"."table"' or 'db.schema.table'
+            ci_schemas: dict = {}
+            for result in rr.get('results', []):
+                if result.get('status') not in ('success', 'pass'):
+                    continue
+                uid      = result.get('unique_id', '')
+                relation = result.get('relation_name') or ''
+                parts    = [p.strip('"').strip('`').strip("'") for p in relation.split('.')]
+                if len(parts) >= 2 and uid:
+                    ci_schemas[uid] = parts[-2]  # schema is second-to-last component
+            patched = 0
+            for uid, node in manifest_data.get('nodes', {}).items():
+                if uid in ci_schemas:
+                    node['schema'] = ci_schemas[uid]
+                    patched += 1
+            for uid, sm_data in manifest_data.get('semantic_models', {}).items():
+                if uid in ci_schemas:
+                    nr = sm_data.get('node_relation', {})
+                    if isinstance(nr, dict):
+                        nr['schema_name'] = ci_schemas[uid]
+                        nr['schema']      = ci_schemas[uid]
+                    patched += 1
+            click.echo(f"  Patched schema from run_results for {patched} CI-built node(s)")
 
         # ── Generate cube YAML files ───────────────────────────────────
         output_path = Path(output)
