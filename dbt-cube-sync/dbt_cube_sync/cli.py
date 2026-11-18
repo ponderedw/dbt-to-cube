@@ -16,6 +16,7 @@ from .core.cube_generator import CubeGenerator
 from .core.state_manager import StateManager
 from .connectors.base import ConnectorRegistry
 from .config import Config
+from .cube_auth import cube_auth_headers
 
 # Import connectors to register them
 from .connectors import superset, tableau, powerbi
@@ -82,10 +83,11 @@ def _diff_cube_files(
     return added, modified, removed
 
 
+
 def _fetch_cube_api_meta(cube_api_url: str, cube_api_secret: str = '') -> Dict[str, dict]:
     """Return {cube_name: cube_info} from the Cube.js /meta API."""
     url = cube_api_url.rstrip('/') + '/cubejs-api/v1/meta'
-    headers = {'Authorization': f'Bearer {cube_api_secret}'} if cube_api_secret else {}
+    headers = cube_auth_headers(cube_api_secret)
     resp = _requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
     return {c['name']: c for c in resp.json().get('cubes', [])}
@@ -247,9 +249,7 @@ def _query_cube_via_api(
     if not measures:
         return True, 'no measures (skipped)'
 
-    headers = {'Content-Type': 'application/json'}
-    if cube_api_secret:
-        headers['Authorization'] = f'Bearer {cube_api_secret}'
+    headers = {'Content-Type': 'application/json', **cube_auth_headers(cube_api_secret)}
 
     def _full(name: str) -> str:
         return name if '.' in name else f'{cube_name}.{name}'

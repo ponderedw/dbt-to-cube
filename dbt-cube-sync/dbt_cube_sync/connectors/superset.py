@@ -12,6 +12,7 @@ import requests
 
 from .base import BaseConnector, ConnectorRegistry
 from ..core.models import SyncResult
+from ..cube_auth import cube_auth_headers
 
 
 class SupersetConnector(BaseConnector):
@@ -176,7 +177,7 @@ class SupersetConnector(BaseConnector):
 
     def _fetch_cube_meta(self, cube_api_url: str, cube_api_secret: str) -> Dict[str, dict]:
         url = cube_api_url.rstrip('/') + '/cubejs-api/v1/meta'
-        headers = {'Authorization': f'Bearer {cube_api_secret}'} if cube_api_secret else {}
+        headers = cube_auth_headers(cube_api_secret)
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         return {c['name']: c for c in resp.json().get('cubes', [])}
