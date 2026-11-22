@@ -158,6 +158,7 @@ class CubeGenerator:
                 description=metric_data.description,
                 format=metric_data.format,
                 filters=metric_data.filters,
+                public=metric_data.public,
             )
             measures.append(measure)
 

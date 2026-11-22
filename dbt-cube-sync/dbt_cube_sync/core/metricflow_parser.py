@@ -347,6 +347,8 @@ class MetricFlowParser:
             meta = m.get('meta') or {}
             # filter can live at top level OR in meta (to bypass dbt's Jinja2 rendering)
             filter_val = m.get('filter') or meta.get('filter')
+            config_meta = (m.get('config') or {}).get('meta') or {}
+            public_val = config_meta.get('public', True)
             out.append(MetricFlowMeasure(
                 name=m['name'],
                 agg=m.get('agg', 'sum'),
@@ -357,6 +359,7 @@ class MetricFlowParser:
                 filter=filter_val,
                 format=m.get('format') or meta.get('format'),
                 agg_params=m.get('agg_params'),
+                public=public_val,
             ))
         return out
 
@@ -663,6 +666,7 @@ class MetricFlowParser:
                 description=measure.description,
                 format=_map_dbt_format(measure.format),
                 filters=m_filters,
+                public=measure.public,
             )
 
         for metric in assigned_metrics:

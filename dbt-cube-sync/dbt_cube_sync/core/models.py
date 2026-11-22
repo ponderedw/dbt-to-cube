@@ -43,6 +43,7 @@ class MetricFlowMeasure(BaseModel):
     filter: Optional[str] = None  # MetricFlow filter expression
     format: Optional[str] = None  # format hint, e.g. "percent", "currency"
     agg_params: Optional[Dict[str, Any]] = None  # extra agg parameters, e.g. percentile value
+    public: bool = True  # set via meta.public: false to hide from Cube.js UI
 
 
 class MetricFlowSemanticModel(BaseModel):
@@ -112,6 +113,7 @@ class DbtMetric(BaseModel):
     description: Optional[str] = None
     format: Optional[str] = None  # Cube.js format: 'percent', 'currency', 'number'
     filters: Optional[List[str]] = None  # list of SQL filter expressions for Cube.js
+    public: bool = True  # set to False to hide from Cube.js UI
 
 
 class DbtRefreshKey(BaseModel):
