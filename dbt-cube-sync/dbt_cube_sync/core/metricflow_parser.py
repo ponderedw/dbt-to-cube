@@ -419,6 +419,7 @@ class MetricFlowParser:
                 type_params=tp,
                 filter=filter_val,
                 format=data.get('format') or meta.get('format') or config_meta.get('format'),
+                public=config_meta.get('public', True),
             )
         except Exception as exc:
             print(f"  Warning: skipping metric '{data.get('name', '?')}': {exc}")
@@ -778,6 +779,7 @@ class MetricFlowParser:
                     description=metric.description,
                     format=fmt,
                     filters=cube_filters,
+                    public=metric.public,
                 )
 
             # LEGACY format: Look for measure reference
@@ -797,6 +799,7 @@ class MetricFlowParser:
                 description=metric.description,
                 format=fmt,
                 filters=cube_filters,
+                public=metric.public,
             )
 
         elif metric.type == 'derived':
@@ -824,6 +827,7 @@ class MetricFlowParser:
                 description=metric.description,
                 format=fmt,
                 filters=cube_filters,
+                public=metric.public,
             )
 
         elif metric.type == 'ratio':
@@ -851,6 +855,7 @@ class MetricFlowParser:
                 description=metric.description,
                 format=fmt,
                 filters=cube_filters,
+                public=metric.public,
             )
 
         elif metric.type == 'cumulative':
@@ -879,6 +884,7 @@ class MetricFlowParser:
                 description=metric.description,
                 format=fmt,
                 filters=cube_filters,
+                public=metric.public,
             )
 
         elif metric.type == 'conversion':
@@ -902,6 +908,7 @@ class MetricFlowParser:
                 description=metric.description,
                 format=fmt or 'percent',
                 filters=cube_filters,
+                public=metric.public,
             )
 
         return None

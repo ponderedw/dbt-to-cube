@@ -93,6 +93,7 @@ class MetricFlowMetric(BaseModel):
     type_params: MetricFlowTypeParams
     filter: Optional[str] = None  # MetricFlow filter expression
     format: Optional[str] = None  # format hint, e.g. "percent", "currency"
+    public: bool = True  # set via config.meta.public: false to hide from Cube.js UI
 
 
 class DbtColumn(BaseModel):
