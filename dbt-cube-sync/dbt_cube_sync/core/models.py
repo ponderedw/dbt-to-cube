@@ -178,6 +178,7 @@ class CubeMeasure(BaseModel):
     description: Optional[str] = None
     format: Optional[str] = None  # 'percent', 'currency', 'number'
     filters: Optional[List[str]] = None  # list of SQL filter expressions
+    public: bool = True  # set to False to hide from Cube.js UI
 
 
 class CubeRefreshKey(BaseModel):

@@ -247,14 +247,16 @@ class CubeGenerator:
         measures = []
         for m in cube_schema.measures:
             entry = {'name': m.name, 'type': m.type, 'title': m.title}
+            if not m.public:
+                entry['public'] = False
             if m.sql:
-                entry['sql'] = m.sql
+                entry['sql'] = self._normalize_cube_ref(m.sql)
             if m.description:
                 entry['description'] = m.description
             if m.format:
                 entry['format'] = m.format
             if m.filters:
-                entry['filters'] = [{'sql': f} for f in m.filters]
+                entry['filters'] = [{'sql': self._normalize_cube_ref(f)} for f in m.filters]
             measures.append(entry)
         cube['measures'] = measures
 
