@@ -205,6 +205,7 @@ def _post_cube_query(
                 body = resp.json()
                 error = body.get('error', '')
                 if error == 'Continue wait':
+                    click.echo('.', nl=False)
                     time.sleep(5)
                     continue
                 if error:
@@ -220,15 +221,6 @@ def _post_cube_query(
     return False, 'max retries exceeded'
 
 
-def _is_filter_param_error(error: str) -> bool:
-    """Return True when an error is caused by missing filter parameters, not a broken schema.
-
-    Cube.js FILTER_PARAMS / SECURITY_CONTEXT expressions emit SQL with '$'-style
-    placeholders when no matching filter is supplied.  Redshift then rejects the
-    query with a syntax error.  These are not real schema errors.
-    """
-    return '$' in error or 'syntax error' in error.lower()
-
 
 def _query_cube_via_api(
     cube_name: str,
@@ -236,15 +228,7 @@ def _query_cube_via_api(
     cube_api_url: str,
     cube_api_secret: str = '',
 ) -> Tuple[bool, str]:
-    """Validate a cube by testing every measure and every dimension.
-
-    Each measure is tested individually so a broken column is named precisely.
-    Measures that fail only because they require FILTER_PARAMS context (detected
-    by '$' in the SQL error) are skipped — they are not broken, just contextual.
-
-    Dimensions are tested together with the first working measure.  A failure
-    there means a broken dimension expression.
-    """
+    """Validate a cube with a single query covering all measures and dimensions."""
     measures = [m['name'] for m in cube_info.get('measures', [])]
     if not measures:
         return True, 'no measures (skipped)'
@@ -254,45 +238,29 @@ def _query_cube_via_api(
     def _full(name: str) -> str:
         return name if '.' in name else f'{cube_name}.{name}'
 
-    plain_dims = [_full(d['name']) for d in cube_info.get('dimensions', []) if d.get('type') != 'time']
-    time_dims  = [{'dimension': _full(d['name']), 'granularity': 'day'}
-                  for d in cube_info.get('dimensions', []) if d.get('type') == 'time']
+    all_measures = [_full(m) for m in measures]
+    plain_dims   = [_full(d['name']) for d in cube_info.get('dimensions', []) if d.get('type') != 'time']
+    time_dims    = [{'dimension': _full(d['name']), 'granularity': 'day'}
+                    for d in cube_info.get('dimensions', []) if d.get('type') == 'time']
 
-    errors: list = []
-    skipped: list = []
-    working_measure: Optional[str] = None
-
-    for bare in measures:
-        full_m = _full(bare)
-        ok, detail = _post_cube_query({'query': {'measures': [full_m], 'limit': 1}}, cube_api_url, headers)
-        if ok:
-            if working_measure is None:
-                working_measure = full_m
-        elif _is_filter_param_error(detail):
-            skipped.append(bare.split('.')[-1])
-        else:
-            errors.append(f'{bare.split(".")[-1]}: {detail}')
-
-    # Test all dimensions with the first working measure
-    if working_measure and (plain_dims or time_dims):
-        q: dict = {'measures': [working_measure], 'limit': 1}
-        if plain_dims:
-            q['dimensions'] = plain_dims
-        if time_dims:
-            q['timeDimensions'] = time_dims
-        ok, detail = _post_cube_query({'query': q}, cube_api_url, headers)
-        if not ok:
-            errors.append(f'dimensions: {detail}')
-
-    if errors:
-        return False, '; '.join(errors)
-
-    n_tested = len(measures) - len(skipped)
+    n_m = len(all_measures)
     n_d = len(plain_dims) + len(time_dims)
-    summary = f'1 row(s), {n_tested} measure(s), {n_d} dim(s)'
-    if skipped:
-        summary += f' ({len(skipped)} filter-param skipped)'
-    return True, summary
+    click.echo(f"\n  {cube_name}  ({n_m} measure(s), {n_d} dim(s))")
+
+    q: dict = {'measures': all_measures, 'limit': 1}
+    if plain_dims:
+        q['dimensions'] = plain_dims
+    if time_dims:
+        q['timeDimensions'] = time_dims
+
+    click.echo('  Started querying ', nl=False)
+    ok, detail = _post_cube_query({'query': q}, cube_api_url, headers)
+    if ok:
+        click.echo('  succeeded')
+        return True, f'1 row(s), {n_m} measure(s), {n_d} dim(s)'
+    else:
+        click.echo(f'  error: {detail}')
+        return False, detail
 
 
 def _upload_to_s3(output_dir: str, s3_bucket: str, s3_prefix: str) -> str:
@@ -1521,31 +1489,33 @@ def validate_cubes(
 
                 click.echo(f"\n{'─' * 62}")
                 click.echo(f"QUERY VALIDATION ({len(changed)} changed cube(s))")
-                click.echo("─" * 62 + "\n")
+                click.echo("─" * 62)
 
-                passed_count = 0
-                failed_count = 0
+                results: list = []
                 load_errors: Set[str] = set()
 
                 for name in sorted(changed):
                     cube_info = new_meta.get(name)
                     if cube_info is None:
                         load_errors.add(name)
-                        pad = max(0, 44 - len(name))
-                        click.echo(f"  ✗ LOAD ERROR  {name}{' ' * pad}not found in Cube.js /meta")
-                        failed_count += 1
+                        results.append((name, False, 'not found in Cube.js /meta'))
                         continue
                     ok, detail = _query_cube_via_api(name, cube_info, cube_api_url, cube_api_secret)
+                    results.append((name, ok, detail))
+
+                passed_count = sum(1 for _, ok, _ in results if ok)
+                failed_count = len(results) - passed_count
+
+                click.echo(f"\n{'─' * 62}")
+                click.echo("SUMMARY")
+                click.echo("─" * 62)
+                for name, ok, detail in results:
                     status = "✓ PASSED" if ok else "✗ FAILED"
                     pad = max(0, 44 - len(name))
                     click.echo(f"  {status}  {name}{' ' * pad}{detail}")
-                    if ok:
-                        passed_count += 1
-                    else:
-                        failed_count += 1
 
                 click.echo(f"\n{'─' * 62}")
-                click.echo(f"  RESULT: {passed_count}/{len(changed)} query checks passed")
+                click.echo(f"  RESULT: {passed_count}/{len(results)} cubes passed")
                 if load_errors:
                     click.echo(f"  LOAD ERRORS: {len(load_errors)} cube(s) failed to load")
                 click.echo("=" * 62)
@@ -1688,23 +1658,27 @@ def validate_cubes(
             if changed:
                 click.echo(f"\n{'─' * 62}")
                 click.echo(f"QUERY VALIDATION ({len(changed)} changed cube(s))")
-                click.echo("─" * 62 + "\n")
+                click.echo("─" * 62)
 
-                passed_count = 0
-                failed_count = 0
+                results: list = []
                 for name in sorted(changed):
                     cube_info = new_meta.get(name, {})
                     ok, detail = _query_cube_via_api(name, cube_info, cube_api_url, cube_api_secret)
+                    results.append((name, ok, detail))
+
+                passed_count = sum(1 for _, ok, _ in results if ok)
+                failed_count = len(results) - passed_count
+
+                click.echo(f"\n{'─' * 62}")
+                click.echo("SUMMARY")
+                click.echo("─" * 62)
+                for name, ok, detail in results:
                     status = "✓ PASSED" if ok else "✗ FAILED"
                     pad = max(0, 44 - len(name))
                     click.echo(f"  {status}  {name}{' ' * pad}{detail}")
-                    if ok:
-                        passed_count += 1
-                    else:
-                        failed_count += 1
 
                 click.echo(f"\n{'─' * 62}")
-                click.echo(f"  RESULT: {passed_count}/{len(changed)} query checks passed")
+                click.echo(f"  RESULT: {passed_count}/{len(results)} cubes passed")
                 if load_errors:
                     click.echo(f"  LOAD ERRORS: {len(load_errors)} cube(s) failed to load")
                 click.echo("=" * 62)
