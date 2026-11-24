@@ -1320,6 +1320,11 @@ def sync_all(
               help='Path to dbt run_results.json. Patches schema for each succeeded '
                    'model using the actual relation_name it was built into — so Cube.js '
                    'queries the CI-built tables instead of production ones.')
+@click.option('--prod-manifest', required=False, default=None,
+              help='Path to the production manifest.json. When provided, generates cube '
+                   'files from both manifests, diffs them by file hash, and queries only '
+                   'changed/added cubes. No running Cube.js with the old schema needed. '
+                   'Combine with --cube-api-url to also run query validation.')
 def validate_cubes(
     manifest: str,
     sqlalchemy_uri: Optional[str],
@@ -1341,6 +1346,7 @@ def validate_cubes(
     api_secret: str,
     dev_schema: Optional[str],
     run_results: Optional[str],
+    prod_manifest: Optional[str],
 ):
     """
     Validate Cube.js schemas against a running Cube.js instance (or via Docker).
@@ -1449,6 +1455,111 @@ def validate_cubes(
 
         if not models:
             click.echo("  No cube models found — nothing to validate.")
+            return
+
+        # ══════════════════════════════════════════════════════════════
+        # MANIFEST DIFF MODE
+        # ══════════════════════════════════════════════════════════════
+        if prod_manifest:
+            click.echo(f"\n  Mode: Manifest Diff  (prod: {prod_manifest})")
+
+            # ── Generate current cube files → output dir ───────────────
+            output_path.mkdir(parents=True, exist_ok=True)
+            generator = CubeGenerator('./cube/templates', str(output_path))
+            file_paths, _, _ = generator.generate_cube_files(models)
+            view_paths = generator.generate_view_files(mf_views)
+            click.echo(f"  Generated {len(file_paths)} cube(s) + {len(view_paths)} view(s) → {output_path}")
+
+            # ── Parse prod manifest and generate prod cube files → temp dir ──
+            with tempfile.TemporaryDirectory() as prod_output_dir:
+                prod_parser = DbtParser(
+                    manifest_path=prod_manifest,
+                    catalog_path=catalog,
+                    sqlalchemy_uri=sqlalchemy_uri,
+                )
+                prod_models = prod_parser.parse_models()
+                prod_mf_models = prod_parser.parse_metricflow_models()
+                prod_mf_views = prod_parser.parse_metricflow_views()
+                if prod_mf_models:
+                    existing_names = {m.name for m in prod_models}
+                    prod_models += [m for m in prod_mf_models if m.name not in existing_names]
+
+                prod_generator = CubeGenerator('./cube/templates', prod_output_dir)
+                prod_generator.generate_cube_files(prod_models)
+                prod_generator.generate_view_files(prod_mf_views)
+                click.echo(f"  Generated {len(prod_models)} prod cube(s) → temp dir")
+
+                # ── Diff the two output dirs by file hash ──────────────
+                prod_hashes = _load_deployed_file_hashes(deployed_dir=prod_output_dir)
+                added, modified, removed = _diff_cube_files(str(output_path), prod_hashes)
+
+            # ── Print diff report ──────────────────────────────────────
+            click.echo("\n" + "─" * 62)
+            click.echo("SCHEMA DIFF (prod manifest → current manifest)")
+            click.echo("─" * 62)
+
+            if added:
+                click.echo(f"\n  + Added ({len(added)}):")
+                for name in sorted(added):
+                    click.echo(f"      {name}")
+            if modified:
+                click.echo(f"\n  ~ Modified ({len(modified)}):")
+                for name in sorted(modified):
+                    click.echo(f"      {name}")
+            if removed:
+                click.echo(f"\n  - Removed ({len(removed)}):")
+                for name in sorted(removed):
+                    click.echo(f"      {name}")
+            if not added and not modified and not removed:
+                click.echo("\n  No schema changes detected.")
+
+            changed = added | modified
+
+            # ── Query validation for changed/added cubes ───────────────
+            if changed and cube_api_url:
+                new_meta = _fetch_cube_api_meta(cube_api_url, cube_api_secret)
+
+                click.echo(f"\n{'─' * 62}")
+                click.echo(f"QUERY VALIDATION ({len(changed)} changed cube(s))")
+                click.echo("─" * 62 + "\n")
+
+                passed_count = 0
+                failed_count = 0
+                load_errors: Set[str] = set()
+
+                for name in sorted(changed):
+                    cube_info = new_meta.get(name)
+                    if cube_info is None:
+                        load_errors.add(name)
+                        pad = max(0, 44 - len(name))
+                        click.echo(f"  ✗ LOAD ERROR  {name}{' ' * pad}not found in Cube.js /meta")
+                        failed_count += 1
+                        continue
+                    ok, detail = _query_cube_via_api(name, cube_info, cube_api_url, cube_api_secret)
+                    status = "✓ PASSED" if ok else "✗ FAILED"
+                    pad = max(0, 44 - len(name))
+                    click.echo(f"  {status}  {name}{' ' * pad}{detail}")
+                    if ok:
+                        passed_count += 1
+                    else:
+                        failed_count += 1
+
+                click.echo(f"\n{'─' * 62}")
+                click.echo(f"  RESULT: {passed_count}/{len(changed)} query checks passed")
+                if load_errors:
+                    click.echo(f"  LOAD ERRORS: {len(load_errors)} cube(s) failed to load")
+                click.echo("=" * 62)
+
+                if failed_count > 0 or load_errors:
+                    sys.exit(1)
+            elif changed:
+                click.echo("\n  (no --cube-api-url provided — skipping query validation)")
+                click.echo("=" * 62)
+            else:
+                click.echo("\n" + "=" * 62)
+                click.echo("  No changed cubes — nothing to query-validate.")
+                click.echo("=" * 62)
+
             return
 
         # ══════════════════════════════════════════════════════════════
